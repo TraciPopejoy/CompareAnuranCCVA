@@ -1,0 +1,42 @@
+---
+title: "1_TraitBasedCCVA"
+author: "TP DuBose"
+date: "11/3/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse); library(vegan)
+library(corrplot)
+```
+
+# Trait Based CCVA
+
+to do:
+look at chloe's PCA to reduce trait inputs
+reduce thermoregulation trait inputs
+actually run a good PCA
+
+```{r loading the trait databases}
+at1<-read.csv('data/ATraiU_summary_values_2020AUG.csv')
+at2<-read.csv('../AnuranMNMs/ATraiU 2.0/ATraiU2_summary_values_2022SEPT.csv')
+```
+
+```{r}
+anuran_traits<-at1 %>% left_join(at2, by=c('latin_name'='species')) %>%
+  filter(!is.na(refIDs)) %>%
+  mutate(across(c('nocturnal','diurnal','crepuscular','arrhythmic'),
+                ~ifelse(.x == 0, F, T)))
+at_num<-anuran_traits %>% mutate(across(-c('family','latin_name'), as.numeric))
+```
+
+```{r}
+trait_ord<-metaMDS(at_num[,-c(1,2)], na.rm=T)
+```
+
+```{r}
+plot(trait_ord)
+```
+
+
