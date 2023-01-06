@@ -12,211 +12,6 @@ library(vegan); library(ggrepel); library(cowplot); library(MetBrewer); library(
 pot_list<-read.csv('../AnuranMNMs/ATraiU 2.0/ATraiU2_summary_values_2022SEPT.csv') %>% pull(species)
 ```
 
-## Species List
-
-The goal is to get 10-20 species that can be compared across different climate change vulnerability assessments. We want to make sure that a good portion of each species range is within our study region, the Southeast United States, that they have unique traits when compared to congenerics / other anurans, and we capture a taxonomic gradient. 
-
-So in a meeting on Dec 7, Meryl, Chloe and Traci identified nine species that would likely be great to run for the CCVAs based on their uniqueness and amount of range within the SE region. These species have high trait completeness for needed MNM traits (at least 3 of Tmerge, Tpref, CTmin and CTmax). These nine species are: `r wants<-c('Anaxyrus americanus', 'Anaxyrus fowleri','Scaphiopus holbrookii','Gastrophryne carolinensis','Lithobates clamitans','Lithobates catesbeianus','Dryophytes chrysoscelis','Dryophytes versicolor','Pseudacris crucifer')`
-
-To expand this species list, I first approximate how much of each species area of occurrence is within the approximate SE region. 
-
-```{r}
-# pull in all the occurrence points used to calculate the RCS
-anuran_pts<-NULL
-for(s in pot_list[pot_list != 'Lithobates sevosus']){
-  anuran_pts<-bind_rows(anuran_pts,
-                        # for each species occurrences
-                        geometry=read.csv(paste0('../National-RCS/data/occ_data/',s,'_20210330.csv')) %>% 
-                        # only keep this information about the occurrence point
-                          dplyr::select(source, species, Longitude, Latitude,
-                                        coordinateUncertaintyInMeters, coordinatePrecision, elevation, 
-                                        day, month, year) %>%
-                          # convert it from a tibble to a sf
-                          st_as_sf(coords=c('Longitude','Latitude'), 
-                                   crs=st_crs("+proj=longlat +ellps=WGS84 +datum=WGS84")) %>%
-                          # transform it from WGS84 to Alber's 
-                          st_transform(st_crs("+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=km +no_defs")) %>%
-                          # take the union, which makes a multipoint objects
-                          st_union() %>%
-                          # and add a 1km buffer to the points
-                          st_buffer(1) %>% 
-                          # calculate the entire area, and rename the species and geometry column
-                          bind_cols(geometry=., species=s, area=st_area(.))) 
-}
-
-# bind_cols removed the sf, so this is just reminding r that this is an sf in Albers crs
-anuran_pts <- anuran_pts %>%
-  st_as_sf(crs=st_crs("+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=km +no_defs"))
-```
-
-For ease, we are using the spatial extent used to build the species list for the ATraiU-TaDS database. These values are thus approximate and should only be used for this decision process.
-
-```{r crop aoo, warning=F, message=F}
-# use the maps package to build build a shapefile
-se<-st_as_sf(map('state',c('mississippi', 'georgia', 'florida', 'south carolina', 
-                           'north carolina', 'virginia', 'alabama', 'tennessee'), 
-                 fill=T, plot=F)) 
-# make it one polygon and transform to Albers
-sf::sf_use_s2(FALSE)
-se.u<-se %>% st_make_valid() %>% st_union() %>% st_transform(st_crs(anuran_pts))
-# crop species AOO to the region
-se.aoos<-st_crop(anuran_pts, se.u) %>%
-   bind_cols(se.area=st_area(.)) # measure the area within the region
-
-# use the AOO area and the SE area to calculate 
-# the percent of the species AOO within our region
-poss.spp<-se.aoos %>%
-  as_tibble() %>%
-  mutate(per.inreg=round(as.numeric(se.area)/as.numeric(area)*100,1))
-```
-
-Just to note, the species already identified above range from `r poss.spp %>% filter(species %in% wants) %>% pull(per.inreg) %>% max()`% to `r poss.spp %>% filter(species %in% wants) %>% pull(per.inreg) %>% min()`% of their range within the general southeastern United States.
-
-Then I pull in the trait data to quantify how many were found within the literature for the 37 possible species we could include. I then join this with the inputed data so that I have the number of and which traits were found within the literature, with the traits we can use in the MNM models. Because *Lithobates kauffeldi* was not included in the Jetz & Pyron phylogeny used to inform trait imputation, we cannot include it within our species list. The literature-found and inputed traits will be used to conduct a PCA to look at trait uniqueness among taxa. 
-
-```{r trait availability}
-trait_avail<-read.csv('../AnuranMNMs/ATraiU 2.0/ATraiU2_summary_values_2022SEPT.csv') %>%
-  select(species, Mass:Tmerge) %>% select(-Tforage_optim) %>%
-  group_by(species) %>%
-  pivot_longer(-species) %>%
-  filter(!is.na(value)) %>% 
-  dplyr::summarize(n_traits=n(),
-            traits=paste(name, collapse=', '), .groups='drop') %>%
-  left_join(read.csv('../AnuranMNMs/input_data/MNM_traits_SEspp.csv'),
-            by='species')
-```
-
-I first explored the variation in traits and identified outliers that were not included in the first list outlined in the 12/7 meeting. 
-
-```{r trait biplots, message=F, warning=F, fig.width=6.5, fig.height=2.7}
-maybes<-c('Dryophytes gratiosus', 'Lithobates areolatus', 'Dryophytes cinereus', 'Pseudacris fouquettei',
-          'Lithobates sphenocephalus', 'Acris gryllus', 'Lithobates grylio')
-trait_avail %>%
-  left_join(poss.spp %>% select(species, per.inreg), by='species') %>%
-  select(-traits, -s.fossorial, -s.arboreal, -nocturnal, -diurnal, -crepuscular) %>%
-  pivot_longer(-c(n_traits, species, per.inreg)) %>%
-  filter(!(name %in% c('Tforage_max','Tforage_min', 'Tbask'))) %>%
-  mutate(category=factor(case_when(species %in% wants ~ 'Included',
-                            species %in% maybes ~ 'Likely',
-                            per.inreg < 30 ~ 'Range Edge', 
-                            T ~ 'Possible'), levels=c('Included','Likely','Possible','Range Edge'))) %>%
-  ggplot()+
-  geom_point(aes(x=value, y=per.inreg, color=category), size=2, alpha=.5) +
-  facet_wrap(~name, scales='free_x')+
-  theme_classic()+
-  scale_color_viridis_d()+
-  scale_y_continuous('Percent AOO within SE region')+
-  theme(legend.position=c(.87,.25),
-        strip.background = element_blank())
-```
-
-I then conducted a quick PCA to investigate I was capturing unique trait combinations. There are likely more elegant ways to do this (functional uniqueness) but I thought this sufficient for our needs. The names of the species that we will include (per 12/7 meeting) and those with less that approximately 30% of their range within the SE region are not plotted below to aid in visualization. 
-
-```{r trait pca var, fig.width=3, fig.height=2}
-trait.pca<-rda(trait_avail[-24, c(5:7,11)])
-# investigate variation on different axis
-screeplot(trait.pca); abline(h = 1, col="red", lty=5)
-pca.sum<-summary(trait.pca)
-```
-
-
-```{r pca plot, echo=F, fig.width=6.5, fig.height=4}
-pca.spp.df<-pca.sum$sites %>% as_tibble() %>% bind_cols(species=trait_avail[-24,]$species) %>%
-  left_join(poss.spp, by='species') %>%
-  mutate(category=factor(case_when(species %in% wants ~ 'Included',
-                            species %in% maybes ~ 'Likely',
-                            per.inreg < 30 ~ 'Range Edge', 
-                            T ~ 'Possible'), levels=c('Included','Likely','Possible','Range Edge')),
-         pltsp=paste0(substr(species, 1,1), '. ', sub(".*? ", "", species)))
-pca.env.df<-pca.sum$species %>% as_tibble() %>% mutate(variable=rownames(pca.sum$species))
-pca.plt<-ggplot()+
-  geom_text_repel(data=pca.spp.df %>% filter(category == 'Likely' | category == 'Possible'),
-             aes(x=PC1, y=PC2, label=pltsp), size=3,
-             max.overlaps = 10, min.segment.length = 0)+
-  geom_point(data=pca.spp.df,
-             aes(x=PC1, y=PC2, color=category), size=3, alpha=.7)+
-    geom_segment(data=pca.env.df, 
-            aes(x=0, y=0, xend=PC1, yend=PC2))+
-  geom_text_repel(dat=pca.env.df, 
-            aes(x=PC1, y=PC2, label=variable), color='blue')+
-  scale_color_viridis_d()+
-  theme_classic()+
-  theme(legend.position='bottom')
-pca.legend<-get_legend(pca.plt)
-plot_grid(
-  plot_grid(pca.plt + theme(legend.position='none'),
-            ggplot()+
-              geom_text_repel(data=pca.spp.df %>% filter(category == 'Likely' | category == 'Possible'),
-                              aes(x=PC3, y=PC2, label=pltsp), size=3,
-                              max.overlaps = 10, min.segment.length = 0)+
-              geom_point(data=pca.spp.df,
-                         aes(x=PC3, y=PC2, color=category), size=3, alpha=.7)+
-              geom_segment(data=pca.env.df, aes(x=0, y=0, xend=PC3, yend=PC2))+
-              geom_text_repel(dat=pca.env.df, 
-                              aes(x=PC3, y=PC2, label=variable), color='blue')+
-              scale_color_viridis_d()+
-              theme_classic()+
-              theme(legend.position='none')),
-  pca.legend, ncol=1, rel_heights = c(.9,.07))
-```
-
-As a way to quantify this, I calculate the rank score for each species on each axis and the rank total AOO. I then subtract 18 from the rank (as the middle rank) and take the absolute value, so that species with higher rank values represent the ends of the spectrum of trait space or range size. 
-
-```{r}
-spp.rnks<-pca.spp.df %>%
-  select(species, starts_with('PC'), per.inreg, area) %>%
-  select(-PC4) %>%
-  mutate(across(-c(species, per.inreg), ~abs(rank(.x)-18)),
-         category=factor(case_when(species %in% wants ~ 'Included',
-                                   species %in% maybes ~ 'Likely',
-                                   per.inreg < 30 ~ 'Range Edge', 
-                                   T ~ 'Possible'),
-                         levels=c('Included','Likely','Possible','Range Edge'))) %>%
-  rowwise() %>% mutate(mean.rank=mean(c(PC1, PC2, PC3, area))) %>% ungroup() %>%
-  arrange(category) 
-```
-
-```{r rank tables, echo=F}
-kable(spp.rnks %>%
-        select(category, species, starts_with('PC'), area, per.inreg, mean.rank),
-      caption='Rank uniqueness in trait space and range size. Higher values means the species is at the end of the spectrum (e.g., very small AOO or very large AOO). Species in the category Included were discussed on 12/7, Likely were identified by TPD in this document, Possible could be added if needed but might be similar to already included species, and Range Edge has less than 30% of its AOO within the SE region. PC1 is Tmerge, PC2 splits CTmax and CTmin, and PC3 splits CTmax and Tpref.',
-      col.names = c('Category','Species', 'PC1','PC2','PC3', 
-                    'AOO', '% in SE', 'Mean Rank'))
-kable(spp.rnks %>% group_by(category) %>% 
-  summarize(mean.rnk=mean(mean.rank),
-            min.rnk=min(mean.rank), 
-            max.rnk=max(mean.rank), .groups='drop'),
-  caption='Summarized Rank Values for the four categories outlined. Note that Included and Likely is typically higher than the two other categories. The minimum rank in likely is Acris gryllus and adds a genera to our taxa list.',
-  col.names = c('Suggested Category','Mean Rank', 'Minimum Rank', 'Maximum Rank'))
-#write.csv('spp.rnks''.n , 'possible_species_list.csv', row.names = F)
-```
-
-Below, I present where the species in the proposed list (Included + Likely, points) align among the trait distributions of the 36 possible species (curves). 
-
-```{r trait gradient, echo=F, warning=F, message=F}
-trait_avail %>%
-  select(species, Mass, CTmax, CTmin, Tpref, Tmerge) %>%
-  pivot_longer(-species) %>%
-  mutate(category=factor(case_when(species %in% wants ~ 'Included',
-                            species %in% maybes ~ 'Likely'),
-                            levels=c('Included','Likely'))) %>%
-  #filter(!is.na(category)) %>%
-  ggplot(aes(x=name, y=value))+
-  geom_violin( )+
-  geom_point(data=. %>% filter(species %in% c(wants, maybes)),
-             aes(color=category),
-             size=2.5, alpha=0.5)+
-  facet_wrap(~name, scales='free', nrow=1)+
-  scale_color_viridis_d(option='C', end=.2, begin=.8)+
-  theme_classic()+
-  labs(x='Variable', y='Gradient (values)')+
-  theme(strip.background = element_blank(),
-        axis.title.x = element_blank(),
-        axis.text.x = element_blank(),
-        axis.line.x = element_blank(),
-        axis.ticks.x = element_blank())
-```
-
 # Spatial Extent of the Comparison
 
 Four possible ways to define the extent of the southeastern United States are: state geopolitical boundaries, USGS agency boundaries, ecoregion boundaries, and watershed boundaries. Below are maps to help us explore which spatial extent works best for our climate change vulnerability assessment. 
@@ -224,6 +19,12 @@ Four possible ways to define the extent of the southeastern United States are: s
 In building the ATraiU-TaDS database, we used the following state geopolitical boundaries as the extent of the southeastern United States. Another option is The Department of Interior identified 9 [Unified Regional Boundaries](https://www.doi.gov/employees/reorg/unified-regional-boundaries) based on watersheds that could be used across DOI agencies, of which there is a 'South Atlantic-Gulf' region. Mississippi is included in the Mississippi Basin (Louisiana to Iowa included) and Virigina is a part of the North Atlantic-Appalachian Region.
 
 ```{r se map, echo=F, fig.height=3, fig.width=6.5}
+# use the maps package to build build a shapefile
+se<-st_as_sf(map('state',c('mississippi', 'georgia', 'florida', 'south carolina', 
+                           'north carolina', 'virginia', 'alabama', 'tennessee'), 
+                 fill=T, plot=F)) 
+# make it one polygon and transform to Albers
+sf::sf_use_s2(FALSE)
 plot_grid(ggplot()+geom_sf(data=se)+ theme_void()+ggtitle('ATraiU-TaDS'),
           ggplot()+geom_sf(data=se %>% filter(ID != 'virginia', ID !='mississippi'))+
             theme_void()+ggtitle('DOI Unified Region'))
@@ -261,7 +62,346 @@ ggplot()+
   geom_sf(data=se, fill=NA, color='white')+
   theme_void()+scale_fill_grey('HUC 2')+
   ggtitle('USGS HUC 4')+
-  theme(legend.position=c(.8,.4)),
+  theme(legend.position=c(.85,.37)),
 rel_widths = c(.7,.4)) 
 ```
+
+We will use theHUC 03, 06 and 08 as the spatial extent of our CCVA comparisons. 
+
+```{r, echo=F}
+rm(epa_eco)
+```
+
+# Species List
+
+The goal is to get 10-20 species that can be compared across different climate change vulnerability assessments. We want to make sure that a good portion of each species range is within our study region, the Southeast United States, that they have unique traits when compared to congenerics / other anurans, and we capture a taxonomic gradient. 
+
+So in a meeting on Dec 7, Meryl, Chloe and Traci identified nine species that would likely be great to run for the CCVAs based on their uniqueness and amount of range within the SE region. These species have high trait completeness for needed MNM traits (at least 3 of Tmerge, Tpref, CTmin and CTmax). These nine species are: `r wants<-c('Anaxyrus americanus', 'Anaxyrus fowleri','Scaphiopus holbrookii','Gastrophryne carolinensis','Lithobates clamitans','Lithobates catesbeianus','Dryophytes chrysoscelis','Dryophytes versicolor','Pseudacris crucifer')`
+
+To expand this species list, I first approximate how much of each species area of occurrence is within the approximate SE region. We do not estimate AOO for 4 species: the three that don't have any physiological trait data (all endemic) and *Lithobates sevosus* because of no occurrence points (endangered).
+
+```{r}
+# pull in all the occurrence points used to calculate the RCS
+anuran_pts<-NULL
+for(s in pot_list[pot_list != 'Lithobates sevosus']){
+  anuran_pts<-bind_rows(anuran_pts,
+                        # for each species occurrences
+                        geometry=read.csv(paste0('../National-RCS/data/occ_data/',s,'_20210330.csv')) %>% 
+                        # only keep this information about the occurrence point
+                          dplyr::select(source, species, Longitude, Latitude,
+                                        coordinateUncertaintyInMeters, coordinatePrecision, elevation, 
+                                        day, month, year) %>%
+                          # convert it from a tibble to a sf
+                          st_as_sf(coords=c('Longitude','Latitude'), 
+                                   crs=st_crs("+proj=longlat +ellps=WGS84 +datum=WGS84")) %>%
+                          # transform it from WGS84 to Alber's 
+                          st_transform(st_crs("+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=km +no_defs")) %>%
+                          # take the union, which makes a multipoint object
+                          st_union() %>%
+                          # and add a 1km buffer to the points
+                          st_buffer(1) %>% 
+                          # calculate the entire area, and rename the species and geometry column
+                          bind_cols(geometry=., species=s, area=st_area(.))) 
+}
+
+# bind_cols removed the sf, so this is just reminding r that this is an sf in Albers crs
+anuran_pts <- anuran_pts %>%
+  st_as_sf(crs=st_crs("+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=km +no_defs"))
+```
+
+We then crop the AOO to our spatial extent and calculate the percent of the area within the region.
+
+```{r crop aoo, fig.width=2, fig.height=2, warning=F, message=F}
+spat.ext<-huc4s %>% 
+  # huc4 0803 was not perfectly aligned with hucs and left holes in the polygon
+  bind_rows(huc4s %>% filter(huc4=="0803") %>% st_buffer(0.1)) %>% 
+  st_union() %>%
+  st_transform(st_crs(anuran_pts)) # transform to Alber's
+# save to share with collaborators
+saveRDS(spat.ext, "spatial_extent.rds")
+ggplot()+geom_sf(data=spat.ext)+theme_classic()
+# crop species AOO to the region
+se.aoos<-st_crop(anuran_pts, spat.ext) %>%
+   bind_cols(se.area=st_area(.)) # measure the area within the region
+# use the AOO area and the SE area to calculate 
+# the percent of the species AOO within our region
+poss.spp<-se.aoos %>%
+  as_tibble() %>%
+  mutate(per.inreg=round(as.numeric(se.area)/as.numeric(area)*100,1))
+
+```
+
+We lose in area estimates for `r pot_list[!(pot_list %in% poss.spp$species )]`. L. sevosus had no occurrences but exists within the region at two-ish ponds in MS; it is highly threatened and might be listed as Endangered. P. kalmi, or the New Jersey chorus frog, is only in N. Virginia and thus not within the region any more. 
+
+```{r aoo in SE plot, echo=F, fig.width=6.5, fig.height=2}
+plot_grid(ggplot()+geom_histogram(data=poss.spp, aes(x=per.inreg), binwidth = 5)+
+            scale_y_continuous('Count Species')+
+            scale_x_continuous('Percent AOO in SE geopolitical region',
+                               labels=function(x){paste0(x,'%')}) + theme_classic(),
+          ggplot()+stat_ecdf(data=poss.spp, aes(x=per.inreg))+
+            scale_x_continuous('Percent AOO in SE geopolitical region',
+                               breaks=c(20,30,50,75,100),
+                               labels=function(x){paste0(x,'%')})+
+            scale_y_continuous('Species', labels = function(x){x*36})+
+            theme_classic())
+```
+
+Just to note, the species already identified above range from `r poss.spp %>% filter(species %in% wants) %>% pull(per.inreg) %>% max()`% to `r poss.spp %>% filter(species %in% wants) %>% pull(per.inreg) %>% min()`% of their range within the general southeastern United States. If we exclude species with regional AOO < 25%, we still keep `r 35-ecdf(poss.spp$per.inreg)(25)*35` species to choose from. If we exclude species with regional AOO < 40%, we would still have `r 35-ecdf(poss.spp$per.inreg)(40)*35` species to choose from.
+
+```{r range exclude table, echo=F}
+kable(poss.spp %>% filter(per.inreg < 40) %>% arrange(desc(per.inreg)) %>%
+        select(species, per.inreg),
+      caption='Species to potentially exclude based on the percent of their AOO with HUC 03, 06, and 08. Only displaying species with region AOO % less than 40%.',
+      col.names = c('Species','% AOO in Region'))
+```
+
+## Trait Differences
+
+I pulled in the trait data to quantify how many were found within the literature for the 37 possible species we could include. I then join this with the inputed data so that I have the number of and which traits were found within the literature, with the traits we can use in the MNM models. Because *Lithobates kauffeldi* was not included in the Jetz & Pyron phylogeny used to inform trait imputation, we cannot include it within our species list. The literature-found and inputed traits will be used to conduct a PCA to look at trait uniqueness among taxa. 
+
+```{r trait availability}
+trait_avail<-read.csv('../AnuranMNMs/ATraiU 2.0/ATraiU2_summary_values_2022SEPT.csv') %>%
+  select(species, Mass:Tmerge) %>% select(-Tforage_optim) %>%
+  group_by(species) %>%
+  pivot_longer(-species) %>%
+  filter(!is.na(value)) %>% 
+  dplyr::summarize(n_traits=n(),
+            traits=paste(name, collapse=', '), .groups='drop') %>%
+  left_join(read.csv('../AnuranMNMs/input_data/MNM_traits_SEspp.csv'),
+            by='species')
+```
+
+I first explored the variation in traits and identified outliers that were not included in the first list outlined in the 12/7 meeting. 
+
+```{r trait biplots, message=F, warning=F, fig.width=6.5, fig.height=2.7}
+maybes<-c('Dryophytes gratiosus', 'Lithobates areolatus', 'Dryophytes cinereus', 'Pseudacris fouquettei',
+          'Lithobates sphenocephalus', 'Acris gryllus', 'Lithobates grylio')
+trait_avail %>%
+  left_join(poss.spp %>% select(species, per.inreg), by='species') %>%
+  select(-traits, -s.fossorial, -s.arboreal, -nocturnal, -diurnal, -crepuscular) %>%
+  pivot_longer(-c(n_traits, species, per.inreg)) %>%
+  filter(!(name %in% c('Tforage_max','Tforage_min', 'Tbask'))) %>%
+  mutate(category=factor(case_when(per.inreg < 30 ~ 'Range Edge', 
+                            species %in% wants ~ 'Included',
+                            species %in% maybes ~ 'Likely',
+                            T ~ 'Possible'), levels=c('Included','Likely','Possible','Range Edge'))) %>%
+  ggplot()+
+  geom_point(aes(x=value, y=per.inreg, color=category), size=2, alpha=.5) +
+  facet_wrap(~name, scales='free_x')+
+  theme_classic()+
+  scale_color_viridis_d()+
+  scale_y_continuous('Percent AOO within SE region')+
+  theme(legend.position=c(.87,.25),
+        strip.background = element_blank())
+```
+
+Meryl suggested we also incorprate species that have different ecological and life history traits (found in ATraiU). Below I ran a PCA using the traits identified in the original proposal but just the 36 species for which we quantified AOO above. The plot below does not plot the species whose AOO within the SE < 30%, but they were included in the ordination. 
+
+```{r atraiu traits}
+at1<-read.csv('data/ATraiU_summary_values_2020AUG.csv')
+#names(at1)
+se.at<-at1 %>% select(family, latin_name, max.fecundity_max, max.longevity_max_yrs, min.maturity_min_yrs_fem,
+               max.max_length_mm_fem, max.egg_size_mm,  min.metamorph_time_min,
+               #min.metamorph_size_min, 
+               min.hatch_time_min) %>%
+  filter(latin_name %in% c(poss.spp$species, 'Lithobates sevosus'))
+se.at.fam <- se.at %>% group_by(family) %>% summarize(across(where(is.numeric), ~mean(.x, na.rm=T))) %>%
+  pivot_longer(-family, values_to = 'family.mean')
+se.at.tm<-se.at %>% pivot_longer(cols=-c(family, latin_name)) %>%
+  left_join(se.at.fam, by=c('family', 'name'))%>%
+  mutate(use.trait.val=ifelse(is.na(value), family.mean, value),
+         nicename=recode(name, max.fecundity_max="mx.fecundity", max.longevity_max_yrs="mx.age",
+                          min.maturity_min_yrs_fem="min.maturity", max.max_length_mm_fem="female.size",
+                          max.egg_size_mm="mx.egg.size", min.metamorph_time_min="min.metamorph.time",
+                          #min.metamorph_size_min="min.metamorph.size", 
+                          min.hatch_time_min="min.hatch.time")) %>%
+  select(latin_name, nicename, use.trait.val) %>% pivot_wider(names_from=nicename, values_from=use.trait.val) 
+
+an.traits<-left_join(trait_avail, se.at.tm, by=c('species'='latin_name')) %>%
+  filter(species != 'Lithobates kauffeldi',
+         species != 'Pseudacris kalmi') %>%
+  # filling in some missing traits
+  mutate(nocturnal=ifelse(species %in% c('Pseudacris brachyphona','Pseudacris fouquettei'),1,nocturnal),
+         diurnal=ifelse(species %in% c('Pseudacris brachyphona','Pseudacris fouquettei'),0,diurnal)) %>%
+  # scale so that all traits are centered
+  mutate(across(where(is.numeric), scale))
+names(an.traits)[c(4:7,11:15,17:19,21:23)]
+#an.traits %>% filter(grepl('Pseuda',species))
+```
+
+
+I then conducted a quick PCA to investigate I was capturing unique trait combinations. There are likely more elegant ways to do this (functional uniqueness) but I thought this sufficient for our needs. The names of the species that we will include (per 12/7 meeting) and those with less that approximately 30% of their range within the SE region are not plotted below to aid in visualization. 
+
+```{r trait pca var, fig.width=3, fig.height=2}
+trait.pca<-rda(an.traits[,c(4:7,11:15,17:19,21:23)])
+# investigate variation on different axis
+screeplot(trait.pca); abline(h = 1, col="red", lty=5)
+pca.sum<-summary(trait.pca)
+pca.sum$cont$importance[,1:5]
+```
+
+First, I'll take a look at the trait loadings seperately from the species loadings. Plotting all the traits and species together was overwhelming. I'll use the plot below to name the first, second and third PCA axes. 
+
+```{r pca env plot, fig.width=6.5, fig.height=3, echo=F}
+pca.spp.df<-pca.sum$sites %>% as_tibble() %>% bind_cols(species=an.traits$species) %>%
+  left_join(poss.spp, by='species') %>%
+  mutate(category=factor(case_when(per.inreg < 30 ~ 'Range Edge', 
+                            species %in% wants ~ 'Included',
+                            species %in% maybes ~ 'Likely',
+                            T ~ 'Possible'), levels=c('Included','Likely','Possible','Range Edge')),
+         pltsp=paste0(substr(species, 1,1), '. ', sub(".*? ", "", species)))
+pca.env.df<-pca.sum$species %>% as_tibble() %>% mutate(variable=rownames(pca.sum$species))
+plot_grid(
+  ggplot()+ geom_segment(data=pca.env.df, aes(x=0, y=0, xend=PC1, yend=PC2))+
+              geom_text_repel(dat=pca.env.df, 
+                              aes(x=PC1, y=PC2, label=variable), color='blue')+ 
+    labs(x='PC1',y='PC2')+theme_classic(),
+  ggplot()+ geom_segment(data=pca.env.df, aes(x=0, y=0, xend=PC3, yend=PC2))+
+              geom_text_repel(dat=pca.env.df, 
+                              aes(x=PC3, y=PC2, label=variable), color='blue')+ 
+    labs(x='PC3',y='PC2')+theme_classic())
+```
+
+```{r}
+ntraits<-nrow(pca.sum$species)
+# traits at end of PC1 axis
+pca.sum$species[order(pca.sum$species[,1]),][c(1:2, ntraits-1, ntraits),1]
+# traits at end of P2 axis
+pca.sum$species[order(pca.sum$species[,2]),][c(1:2, ntraits-1, ntraits),2]
+# traits at end of PC3 axis
+pca.sum$species[order(pca.sum$species[,3]),][c(1:2, ntraits-1, ntraits),3]
+
+```
+
+So PC1 is mainly difference between Mass, max fecundity, and CTmax; PC2 is difference between minimum hatch time and being nocturnal or lower prefered temperature; and PC3 is difference between minimum metamorph time and being diurnal. I'll labe the axis below as such.  
+
+```{r pca plot, echo=F, fig.width=6.5, fig.height=4}
+pca.plt<-ggplot()+
+  geom_text_repel(data=pca.spp.df %>% filter(category == 'Likely' | category == 'Possible'),
+             aes(x=PC1, y=PC2, label=pltsp), size=3,
+             max.overlaps = 10, min.segment.length = 0)+
+  geom_point(data=pca.spp.df,
+             aes(x=PC1, y=PC2, color=category), size=3, alpha=.7)+
+  labs(x='CTmax                             mass & max fecundity', 
+       y='nocturnal                               min hatch time')+
+  scale_color_viridis_d()+
+  theme_classic()+
+  theme(legend.position='bottom')
+pca.legend<-get_legend(pca.plt)
+plot_grid(
+    plot_grid(pca.plt + theme(legend.position='none'),
+            ggplot()+
+              geom_text_repel(data=pca.spp.df %>% filter(category == 'Likely' | category == 'Possible'),
+                              aes(x=PC3, y=PC2, label=pltsp), size=3,
+                              max.overlaps = 10, min.segment.length = 0)+
+              geom_point(data=pca.spp.df,
+                         aes(x=PC3, y=PC2, color=category), size=3, alpha=.7)+
+              labs(x='min metamorph time                             diurnal', 
+                   y='nocturnal                               min hatch time')+
+              scale_color_viridis_d()+
+              theme_classic()+
+              theme(legend.position='none')),
+    pca.legend, ncol=1, rel_heights = c(.9,.07))
+```
+
+
+As a way to quantify this, I calculate the rank score for each species on each axis and the rank total AOO. I then subtract 18 from the rank (as the middle rank) and take the absolute value, so that species with higher rank values represent the ends of the spectrum of trait space or range size. 
+
+```{r}
+spp.rnks<-pca.spp.df %>%
+  select(species, starts_with('PC'), per.inreg, area) %>%
+  select(-PC4, -PC5, -PC6) %>%
+  mutate(across(-c(species, per.inreg), ~abs(rank(.x)-18)),
+         category=factor(case_when(per.inreg < 30 ~ 'Range Edge', 
+                                   species %in% wants ~ 'Included',
+                                   species %in% maybes ~ 'Likely',
+                                   T ~ 'Possible'),
+                         levels=c('Included','Likely','Possible','Range Edge'))) %>%
+  rowwise() %>% mutate(mean.rank=mean(c(PC1, PC2, PC3, area))) %>% ungroup() %>%
+  arrange(category) 
+```
+
+```{r rank tables, echo=F}
+kable(spp.rnks %>%
+        select(category, species, starts_with('PC'), area, per.inreg, mean.rank),
+      caption='Rank uniqueness in trait space and range size. Higher values means the species is at the end of the spectrum (e.g., very small AOO or very large AOO). Species in the category Included were discussed on 12/7, Likely were identified by TPD in this document, Possible could be added if needed but might be similar to already included species, and Range Edge has less than 30% of its AOO within the SE region.',
+      col.names = c('Category','Species', 'PC1','PC2','PC3', 
+                    'AOO', '% in SE', 'Mean Rank'))
+kable(spp.rnks %>% group_by(category) %>% 
+  summarize(mean.rnk=mean(mean.rank),
+            min.rnk=min(mean.rank), 
+            max.rnk=max(mean.rank), .groups='drop'),
+  caption='Summarized Rank Values for the four categories outlined. Note that Included and Likely is typically higher than the two other categories. The minimum rank in likely is Acris gryllus and adds a genera to our taxa list.',
+  col.names = c('Suggested Category','Mean Rank', 'Minimum Rank', 'Maximum Rank'))
+#write.csv('spp.rnks''.n , 'possible_species_list.csv', row.names = F)
+```
+
+Below, I present where the species in the proposed list (Included + Likely, points) align among the trait distributions of the 36 possible species (curves). 
+
+```{r trait gradient, echo=F, warning=F, message=F}
+trait_avail %>%
+  select(species, Mass, CTmax, CTmin, Tpref, Tmerge) %>%
+  pivot_longer(-species) %>%
+  mutate(category=factor(case_when(species %in% wants ~ 'Included',
+                            species %in% maybes ~ 'Likely'),
+                            levels=c('Included','Likely'))) %>%
+  #filter(!is.na(category)) %>%
+  ggplot(aes(x=name, y=value))+
+  geom_violin( )+
+  geom_point(data=. %>% filter(species %in% c(wants, maybes)),
+             aes(color=category),
+             size=2.5, alpha=0.5)+
+  facet_wrap(~name, scales='free', nrow=1)+
+  scale_color_viridis_d(option='C', end=.2, begin=.8)+
+  theme_classic()+
+  labs(x='Variable', y='Gradient (values)')+
+  theme(strip.background = element_blank(),
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.ticks.x = element_blank())
+```
+
+```{r}
+trait.table<-left_join(trait_avail, se.at.tm, by=c('species'='latin_name')) %>%
+  filter(species != 'Lithobates kauffeldi',
+         species != 'Pseudacris kalmi') %>%
+  # filling in some missing traits
+  mutate(nocturnal=ifelse(species %in% c('Pseudacris brachyphona','Pseudacris fouquettei'),1,nocturnal),
+         diurnal=ifelse(species %in% c('Pseudacris brachyphona','Pseudacris fouquettei'),0,diurnal),
+         crepuscular=ifelse(species %in% c('Pseudacris brachyphona', 'Pseudacris fouquettei'),0, crepuscular)) %>%
+  filter(species %in% (spp.rnks %>% filter(category != 'Range Edge') %>% pull(species))) %>%
+  select(-n_traits, -traits,
+         -Tbask, -Tforage_max, -Tforage_min,) 
+write.csv(trait.table, 'trait_table.csv')
+```
+
+I looked for trait overlaps in Excel. It looks like Lithobates sevosus and Lithobates capito are very similar, as well as Dryophytes andersonii and Dryophytes femoralis. All of the Pseudacris species are very similar as well. These species trait matrices are shown below. 
+
+```{r}
+kable(trait.table %>% filter((species %in% c('Lithobates sevosus','Lithobates capito',
+                                      'Dryophytes andersonii','Dryophytes femoralis')) |
+                                      grepl('Pseud', species)) %>%
+  select(-crepuscular) %>%
+  mutate(across(c(Mass, CTmax, CTmin, Tpref, Tmerge,mx.age, min.maturity,
+                  mx.egg.size, min.hatch.time), ~round(.x,digits = 2))) %>% 
+  t(),
+  caption='Potentially redundant species of the 25 with sufficient regional AOO %')
+```
+
+I'm comfortable with keeping all the Psuedacris because they have distinct ranges. The Dryophytes MNMs might differ because one is allowed to climb trees to thermoregulate while Dryophytes andersonii is not. I suspect the Lithobates pair MNMs will be very similar and they have very similar ecological traits too. I could see the argument to keep both as species of conservation concern. 
+
+Keeping all would bring our species list to `r spp.rnks %>% filter(category != 'Range Edge') %>% pull(species) %>% length()` species total: `r spp.rnks %>% arrange(species) %>% filter(category != 'Range Edge') %>% pull(species)`. The trait information for these species can be found in the Decision Notes of the 5_Comparison folder in the shared drive. Below is all the included species plotted in trait space. 
+
+```{r}
+ggplot(data=pca.spp.df %>% filter(category != "Range Edge"))+
+  geom_text_repel(aes(x=PC1, y=PC2, label=pltsp), size=3,
+             max.overlaps = 10, min.segment.length = 0)+
+  geom_point(aes(x=PC1, y=PC2), size=3, pch=21, fill=NA)+
+  labs(x='CTmax                             mass & max fecundity', 
+       y='nocturnal                               min hatch time')+
+  scale_color_viridis_d()+
+  theme_classic()
+```
+
 
