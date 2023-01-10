@@ -1,0 +1,59 @@
+---
+title: "Use SDMs to measure CCV"
+author: "Chloe Moore & TP DuBose"
+date: "1/10/2023"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+#install.packages('dismo')
+library(dismo)
+sdmout<-readRDS('C:/Users/Owner/Downloads/Scaphiopus_holbrookii_topmodel.rds')
+sc_bin<-raster('C:/Users/Owner/Downloads/Scaphiopus_holbrookii_bi_pred.asc')
+at_bin<-raster('C:/Users/Owner/Downloads/Anaxyrus_terrestris_bi_pred.asc')
+sc_bin
+plot(at_bin)
+install.packages('landscapemetrics')
+library(landscapemetrics)
+
+# clip rasters to our study area
+spat.ext<-readRDS('../CompareAnuranCCVA/spatial_extent.rds')
+spat.extSp<-as_Spatial(spat.ext) %>% spTransform(crs(at_bin))
+
+at_binc<-mask(at_bin, spat.extSp)
+plot(at_binc); plot(spat.extSp, add=T)
+
+# landscape metrics on the binary raster
+bind_rows(lsm_l_ta(sc_bin), # total area in hectares
+          lsm_l_cohesion(sc_bin), # patch cohesion
+          lsm_l_area_mn(sc_bin), # mean area of patch
+          # used in Hoecker & Turner et al. 2022
+          lsm_l_enn_mn(sc_bin), # connectedness
+          lsm_l_para_mn(sc_bin), # shape, perimieter:area
+          # used in Rose et al. 2022
+          lsm_p_area(sc_bin) %>% # number of patches
+            group_by(layer, level, class, metric) %>%
+            summarize(value=n()), 
+          lsm_l_enn_cv(sc_bin) # patch isolation
+)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
