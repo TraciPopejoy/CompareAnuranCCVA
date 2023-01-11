@@ -19,6 +19,7 @@ library(cowplot) #for plotting maps later
 PATH_iucn_ranges <-'/home/tracidubose/RCS_Anuran_input/ANURA/' #IUCN range maps downloaded 10/2020
 PATH_HUC12 <- '/home/tracidubose/huc12_wgs84_sf_02010323.rds'
 PATH_FocalSpecies_OccurrenceData <- "/home/tracidubose/RCS_Anuran_input/Anuran Occurrence Data/"
+PATH_out<-'b_RegionalRCS/spp_hucs/' # place to store occupied hucs with climate values
 
 # Set spatial coordinate reference system (CRS).
 crs.geo <- st_crs("+proj=longlat +ellps=WGS84 +datum=WGS84")
@@ -30,14 +31,11 @@ anuran.taxa<-c("Acris gryllus", "Acris crepitans",
                "Anaxyrus terrestris", "Anaxyrus fowleri", "Anaxyrus quercicus", 
                "Dryophytes avivoca",  "Dryophytes andersonii", "Dryophytes cinereus", 
                "Dryophytes chrysoscelis", "Dryophytes femoralis", "Dryophytes gratiosus",
-               "Dryophytes squirellus",
-               "Gastrophryne carolinensis",
+               "Dryophytes squirellus", "Gastrophryne carolinensis",
                "Lithobates capito", "Lithobates grylio", "Lithobates okaloosae", 
                "Lithobates heckscheri", "Lithobates sphenocephalus", "Lithobates areolatus", 
-               "Lithobates virgatipes",
-               "Pseudacris ornata", "Pseudacris feriarum", "Pseudacris brachyphona",
-               "Pseudacris fouquettei",
-               "Scaphiopus holbrookii")
+               "Lithobates virgatipes", "Pseudacris ornata", "Pseudacris feriarum", 
+               "Pseudacris brachyphona", "Pseudacris fouquettei", "Scaphiopus holbrookii")
 #IUCN maps for native ranges
 iucn_anuran<-read_sf(PATH_iucn_ranges) %>%
   filter(binomial %in% anuran.taxa) %>% 
@@ -107,8 +105,9 @@ find_area<-function(taxa, # which species to find the aoo for
                     native_range=T, #do you want to exclude points >100km outside the native range
                     watershed=F, #are you using watersheds as grain sizes?
                     rad=1, #if buffering points, what should the buffer radius be?
-                    clim.vars, #list of climate variables to check for outliers
-                    watershed.name.column){
+                    clim.vars #list of climate variables
+                    ){
+  # pulls in the spatial file using get and save original crs
   if(!is.na(spatial.file1)){
     spatial.file<-get(spatial.file1)
     crs.set<-st_crs(spatial.file)}else{
@@ -152,7 +151,8 @@ find_area<-function(taxa, # which species to find the aoo for
    # print(paste(length(unique(clim_out$rowid)), 'of', nrow(geodata), 'points removed as climate outliers for', env.r, 'and', taxa))
   # keep record of all excluded points
   #write.csv(clim_out, paste0(PATH_climout, taxa, '_climout.csv'))}
-  #exclude climate outliers
+  
+  # exclude climate outliers identified in DuBose 2022 and PRISM data
   clim_out <- climate_outliers %>% filter(species == taxa)
   dat_sp<- geodata %>% 
     filter(!(rowid %in% clim_out$rowid))
@@ -160,121 +160,142 @@ find_area<-function(taxa, # which species to find the aoo for
  
   # Calculate area occupied per species. 
   if(watershed==T){
-    dat_sp <- st_transform(dat_sp, st_crs(spatial.file)) # ensuring transformations fit between spatial file and points
-    dat_sp <- st_join(dat_sp, spatial.file) %>%
+    dat_sp <- st_transform(dat_sp, st_crs(spatial.file)) # ensuring fit between spatial file and points
+    dat_sp <- st_join(dat_sp, spatial.file) %>% # spatial join to identify occupied hucs
       filter(!is.na(huc12)) %>%
-      arrange(desc(year)) %>%
+      # only keep unique combinations of hucs & years
       distinct(huc12, year, .keep_all=T)
-     all.poly.nrow<-nrow(dat_sp) #identify howmany watersheds are occupied
+    all.poly.nrow<-nrow(dat_sp) #identify how many watersheds/year combinations exist
+    all.poly.n<-dat_sp %>% distinct(huc12) %>% nrow() # how many watersheds occupied
     area.type<- paste0(spatial.file1,'_WS')
     used.nrow<-nrow(dat_sp)
     min.year<-min(dat_sp$year)
-    area<-dat_sp %>% distinct(huc12) %>% pull(WSAREA) %>% sum() %>% as.numeric()
+    area.i<-dat_sp %>% 
+      # only keep one polygon per huc
+      distinct(huc12, .keep_all=T) %>% 
+      pull(WSAREA) %>% sum() %>% as.numeric()
     
     # Climate Sensitivity based on the AOO calculated above
     CS_out<-NULL
     for(env.r in paste0('huc.',clim.vars)){
     env.raster<-get(env.r)
-    CS_out_v <- dat_sp %>% as_tibble() %>% 
-      select(-geometry) %>%
+    CS_out_v <- dat_sp %>% 
+      # get rid of a bulky column
+      as_tibble() %>% select(-geometry) %>%
+      # keep all occupied hucs and join all climate mean data
       left_join(env.raster, by="huc12") %>% 
+      # reorder columns
       dplyr::select(huc12, year, states, starts_with('mean.')) %>%
+      # translate climate data from wide to long
       pivot_longer(starts_with('mean.')) %>%
+      # pull out the year represented in each row
         mutate(climate_year=gsub('mean.', '', name)) %>%
+      # only keep rows that are equal to or from 29 years before
       filter(year >= climate_year, year-30 < climate_year) %>%
       group_by(huc12, year) %>%
-      dplyr::summarize(mean_v=mean(value),
-                       sd_v=sd(value), .groups='drop') %>%
+      # calculate the moving window value (based on annual means) of each huc year combination
+      dplyr::summarize(clim_sum_val=case_when(env.r == 'huc.ppt'~ mean(value, na.rm=T),
+                                              env.r == 'huc.Tmax'~ max(value, na.rm=T),
+                                              env.r == 'huc.Tmin'~ min(value, na.rm=T)), .groups='drop') %>%
       ungroup() 
+      # across all the data, calculate the mean and sd of the hucxyear mean
       CS_out<-bind_rows(CS_out, 
                         CS_out_v %>% 
                           dplyr::summarize(modyear=calcmode(year),
                                            oldyear=sum(year < (2020-50)),
                                            clim=gsub('huc.','',env.r),
-                                           Cmean=mean(mean_v),
-                                           Csd=sd(mean_v))) %>%
-        mutate(spp=taxa)
+                                           Cmean=mean(clim_sum_val),
+                                           Csd=sd(clim_sum_val)))
       if(spatial.file1=='huc12s'){
-      write.csv(CS_out_v, paste0(taxa,'_', env.r, '_huc_climate_info.csv'))}
+      write.csv(CS_out_v, paste0(PATH_out, taxa, '_climate_info_', gsub('huc.', '', env.r),'.csv'), row.names = F)}
     }
   }else{
     # Generate 1km point buffers. You must use a projected CRS. For CRS, we use: USA Contiguous albers equal area. 
      area.type<- paste0(spatial.file1,'_',rad,'km')
-     
      dat_sp <- st_transform(dat_sp, st_crs(spatial.file)) %>% #overwrites to the projection 
       st_filter(spatial.file) %>% # only keep points pts in the spatial extent
-       arrange(desc(year)) %>% # keep newer years first when discarding overlaps
-       st_transform(crs.albers) %>% st_buffer(1) # buffer by the requested radius
+       st_transform(crs.albers) %>% st_buffer(rad) # buffer by the requested radius
      #print(head(dat_sp))
   # calculate total area 
-     area<-st_union(dat_sp) %>% st_area(.) %>% as.numeric()
+     area.i<-st_union(dat_sp) %>% st_area(.) %>% as.numeric()
      all.poly.nrow<-nrow(dat_sp)
+     all.poly.n<-all.poly.nrow
      min.year<-min(dat_sp$year)
      # prep the data frame for climate variable extraction  
+     if(nrow(dat_sp) != 0){
      dat_sp <- dat_sp %>%
-       count(year) %>%
-       rownames_to_column('rowname') %>%
-       bind_cols(area=st_area(.)) %>%
-       st_transform(st_crs(ppt.prism)) 
+       count(year) %>% # this creates a single polygon for each year
+       rownames_to_column('rowname') %>% # this adds a rowname to join it to the climate extracted data
+       bind_cols(area.i=st_area(.)) %>% # calculates the AOO at each year
+       st_transform(st_crs(ppt.prism)) # transform to match climate data
 #     print(head(dat_sp))
-     used.nrow<-nrow(dat_sp) # keep track of polygons used for climate after removal of small polys
+     used.nrow<-nrow(dat_sp) # keep track of years used for climate
      
     CS_out<-NULL
     for(env.r in paste0(clim.vars, '.prism')){
-    env.raster<-get(env.r)
-
-    env_vals_raw<-exact_extract(env.raster, dat_sp, progress=F, force_df=T)
+    env.raster<-get(env.r) # pull in the climate data
+    # extract the climate data at each year polygon, returns a list
+    env_vals_raw<-exact_extract(env.raster, dat_sp, coverage_area=T, progress=F, force_df=T)
+    # convert the list to a dataframe and join with dat_sp by the rowname
     env_vals<-do.call('rbind',
                       mapply(myfun, env_vals_raw, seq_along(env_vals_raw), SIMPLIFY = F)) %>% 
       left_join(dat_sp %>% as_tibble() %>% select(-geometry), by='rowname') %>%
-      dplyr::select(rowname, year, area, coverage_fraction, n, everything()) %>%
-      pivot_longer(-c(rowname, year, area, coverage_fraction, n))
+      # reorder columns to make it easier to check
+      dplyr::select(rowname, year, area.i, coverage_area, n, everything()) %>%
+      # convert climate data from wide formate to long format
+      pivot_longer(-c(rowname, year, area.i, coverage_area, n))
+    # if loop to try to keep an eye out for points that have no climate data
     if(nrow(filter(env_vals, is.na(value))) != 0){
-      print(paste(nrow(filter(env_vals, is.na(value))), 'suspicious points for', env.r, 'and', taxa))
-      print(head(filter(env_vals, is.na(value))))}
+      print(paste('rownames', paste(filter(env_vals, is.na(value)) %>% pull(rowname) %>% unique(), collapse=', '), 
+                  'suspicious points for', 'ppt', 'and', taxa))}
+    oldyear <- dat_sp %>% filter(year < (2020-50)) %>% pull(area.i) %>% sum() %>% as.numeric()
+    most_year <-dat_sp %>% filter(max(year)==year) %>% pull(year)
+    
     CS_out_v <- env_vals %>%
       mutate(climate_year=gsub('mean.', '', name)) %>%
       filter(year >= climate_year, year-30 < climate_year) %>%
-      group_by(rowname, year, area, n, coverage_fraction) %>%
-      dplyr::summarize(nv=mean(value), .groups='drop') %>%
-      distinct(rowname, coverage_fraction, nv, .keep_all=T) %>%
+      # calculate the climate average at each area
+      group_by(rowname, year, coverage_area) %>% 
+      dplyr::summarize(clim_sum_val=case_when(env.r == 'ppt.prism'~ mean(value, na.rm=T),
+                                              env.r == 'Tmax.prism'~ max(value, na.rm=T),
+                                              env.r == 'Tmin.prism'~ min(value, na.rm=T)), .groups='drop') %>%
+      # cleaning Infs created by trying to calculate min / max on areas outside the raster
+      mutate(across(where(is.numeric), ~na_if(., Inf)), across(where(is.numeric), ~na_if(., -Inf))) %>%
       ungroup() %>%
-      dplyr::summarize(spp=taxa,
-                   modyear=calcmode(year),
-                   oldyear=sum(year < (2020-50)),
-                   #clim=gsub('.prism','',env.r),
-                   Cmean=wtd.mean(nv, weights=coverage_fraction, normwt = T),
-                   Csd=sqrt(wtd.var(nv, weights=coverage_fraction, normwt = T)))
+      dplyr::summarize(modyear=most_year,
+                   oldyear=oldyear,
+                   clim=gsub('.prism','',env.r),
+                   Cmean=wtd.mean(clim_sum_val, weights=coverage_area, normwt = F, na.rm=T),
+                   Csd=sqrt(wtd.var(clim_sum_val, weights=coverage_area, normwt = F, na.rm=T)))
     CS_out<-bind_rows(CS_out, CS_out_v)
-  }
+      }
+     }else{
+      print(paste(nrow(dat_sp), 'in the study region'))
+       area.i=0
+       used.nrow<-0; min.year = NA; area.sqkm = 0; all.poly.nrow<-all.poly.n<-0
+       CS_out <- data.frame(clim=clim.vars, Cmean=rep(NA,length(clim.vars)), Csd=rep(NA, length(clim.vars)))
+       }
   }  
   RCS_comp <- data.frame(scientific_name = taxa, 
                      area.type = area.type,
-                     area.sqkm = area,
+                     area.sqkm = area.i,
                      orig.nrow=orig.nrow,
                      postNR.nrow=postNR.nrow,
                      postCL.nrow=postCL.nrow,
-                     postDif.nrow=all.poly.nrow,
+                     n.polygons=all.poly.nrow,
+                     total.WS=all.poly.n,
                      used.nrow=used.nrow,
                      min.year=min.year,
                      stringsAsFactors = F) %>%
     bind_cols(CS_out %>%
-                select(-spp) %>%
-                        pivot_wider(names_from = clim,
-                                    values_from=c("Cmean","Csd")))
+                pivot_wider(names_from = clim,
+                            values_from=c("Cmean","Csd")))
   
   return(RCS_comp)
+  print(paste('done with', taxa, 'at', spatial.file1))
 }
-```
-
-```{r}
-# notes: need to investigate Anaxyrus quercicus
-find_area(taxa="Acris crepitans",
-                  spatial.file1="spat.ext", rad=5,
-                  clim.vars = c('ppt','Tmax','Tmin'))
 
 ```
-
 
 
 ```{r}
@@ -296,35 +317,123 @@ huc8<-huc12s %>% filter(huc2=="08")
 
 We then apply this function at the differen grain sizes to create a single dataframe with out RCS components. 
 
-```{r}
+```{r calculate the RCS at many scales, warning=F}
 RCS_comp_all<-NULL
 start.time<-Sys.time()
-for(extent.type in c("spat.ext", "huc3","al")){
-for(spp in anuran.taxa[c(1:2,5:7)]){
+for(spp in anuran.taxa){
+  buff_out<-NULL
+  for(buf.ext in c("spat.ext", "huc3","huc6", "huc8","al","fl","sc","nc","ga","ms")){
   buff1<-find_area(taxa=spp,
-                  spatial.file1=extent.type, rad=1,
+                  spatial.file1=buf.ext, rad=1,
                   clim.vars = c('ppt','Tmax','Tmin'))
   buff5<-find_area(taxa=spp,
-                  spatial.file1=extent.type, rad=5,
+                  spatial.file1=buf.ext, rad=5,
                   clim.vars = c('ppt','Tmax','Tmin'))
-  huc3out<-find_area(spp, 
-          "huc3", native_range=T, watershed=T, 
-          clim.vars=c('ppt','Tmax','Tmin'))
-  huc12all<-find_area("Acris gryllus", 
+  buff_out<-bind_rows(buff_out, buff1, buff5)
+  print(paste('done with',buf.ext,'for',spp))
+  }
+  # only have to run hucs once
+  huc12all<-find_area(spp, 
           "huc12s", native_range=T, watershed=T, 
           clim.vars=c('ppt','Tmax','Tmin'))
 
-  RCS_comp_all<-bind_rows(RCS_comp_all, 
-                          bind_rows(buff1, buff5, huc12all))
-}
+  RCS_comp_all<-bind_rows(RCS_comp_all, huc12all, buff_out)
 }
 end.time<-Sys.time()
 end.time-start.time
+write.csv(RCS_comp_all, 'b_RegionalRCS/buffersmainly.csv', row.names = F)
+```
+
+
+```{r code to show where climate NAs can occur, echo=F, warning=F}
+ag_pts<-read.csv(list.files(PATH_FocalSpecies_OccurrenceData, pattern="Acris gryllus", full.names = T)) %>%
+    dplyr::select(family, genus, species, Longitude, Latitude, year, source, final.taxa) %>%
+    filter(!is.na(year), year > 1894) %>% 
+    st_as_sf(coords=c("Longitude","Latitude"), crs = crs.geo) %>% #convert to a sf dataframe
+    rowid_to_column()
+ag_sp <- st_transform(ag_pts, st_crs(spat.ext)) %>% #overwrites to the projection 
+      st_filter(spat.ext) %>% # only keep points pts in the spatial extent
+       st_transform(crs.albers) %>% st_buffer(5) %>%
+   count(year) %>% # this creates a single polygon for each year
+       rownames_to_column('rowname') %>% # this adds a rowname to join it to the climate extracted data
+       bind_cols(area=st_area(.)) %>% # calculates the AOO at each year
+       st_transform(st_crs(ppt.prism))
+find_area(taxa='Acris gryllus',
+                  spatial.file1='spat.ext', rad=5,
+                  clim.vars = c('ppt','Tmax','Tmin'))
+library(tidyterra)
+ggplot()+#geom_sf(data=spat.ext) +
+  geom_spatraster(data=ppt.prism, aes(fill=`1954`))+
+  geom_sf(data = ag_sp %>% filter(rowname==28), color='white', fill=NA)+
+  coord_sf(xlim=st_bbox(dat_sp[28,])[c(1,3)],
+           ylim=st_bbox(dat_sp[28,])[c(2,4)])
 ```
 
 ```{r}
-RCS_comp_all %>% arrange(scientific_name)
+all.spp.huc<-NULL
+for(i in list.files(PATH_out)){
+  all.spp.huc<-bind_rows(all.spp.huc,
+                         read.csv(paste0('b_RegionalRCS/spp_hucs/', i), colClasses = c('character','integer','numeric')) %>%
+                           mutate(scientific_name=gsub('_.*','',i),
+                                  climate_var=gsub('_','',substr(i, nchar(i)-7, nchar(i)-4))))
+}
 
+# join with huc12 tibble 
+main.huc.df<-left_join(all.spp.huc %>% pivot_wider(names_from=climate_var, values_from=clim_sum_val),
+          huc12s %>% as_tibble() %>% select(huc2, huc12, WSAREA, states),
+          by='huc12')
+huc.states<-NULL
+for(stt in c('NC', "AL","FL","SC","GA","MS")){
+  st.huc<-main.huc.df %>% 
+    filter(grepl(stt, states)) 
+  area.i<-st.huc %>% distinct(scientific_name, huc12, .keep_all=T) %>%
+    group_by(scientific_name) %>%
+    dplyr::summarize(area.type=paste0(tolower(stt), '_WS'),
+                     area.sqkm=sum(WSAREA))
+  huc.sum<-st.huc %>% distinct(scientific_name, huc12, year, .keep_all=T) %>%
+    group_by(scientific_name) %>%
+    summarize(area.type=paste0(tolower(stt), '_WS'),
+              n.polygons=n(),
+              total.WS=n_distinct(huc12),
+              across(c(ppt,Tmax,Tmin), sd, .names='Csd_{.col}'),
+              across(c(ppt,Tmax,Tmin), mean, .names='Cmean_{.col}'),
+              min.year=min(year),
+              modyear=calcmode(year),
+              oldyear=sum(year < (2020-50)))
+  huc.states<-bind_rows(huc.states,
+            left_join(area.i,huc.sum, by=c('scientific_name','area.type')))
+}
+
+huc.huc<-main.huc.df %>%
+  group_by(scientific_name, huc2) %>%
+  dplyr::summarize(area.type=paste0('huc', unique(huc2), '_WS'),
+                     area.sqkm=sum(WSAREA),
+                   n.polygons=n(),
+              total.WS=n_distinct(huc12),
+              across(c(ppt,Tmax,Tmin), sd, .names='Csd_{.col}'),
+              across(c(ppt,Tmax,Tmin), mean, .names='Cmean_{.col}'),
+              min.year=min(year),
+              modyear=calcmode(year),
+              oldyear=sum(year < (2020-50)))
+
+RCS_comp_all<-bind_rows(RCS_comp_all, huc.states, huc.huc) %>%
+  distinct(scientific_name, area.type, area.sqkm, .keep_all=T)
+```
+
+```{r}
+ggplot()+
+  geom_sf(data=huc12s %>% filter(grepl('AL',states)), aes(fill='watershed'))+
+  geom_sf(data=se %>% filter(ID == 'alabama'), fill=NA, aes(color='buffer'), linewidth=2)+
+  scale_color_manual('Grain Size', values=c('goldenrod','forestgreen'), 
+                     aesthetics = c('color','fill'))+
+  theme_void()+theme(legend.position='left')
+```
+
+
+
+```{r}
+RCS_comp_all %>% arrange(scientific_name)
+write.csv(RCS_comp_all, 'b_RegionalRCS/regional_rcs_011023.csv', row.names = F)
 ```
 
 ```{r}
@@ -338,7 +447,8 @@ read.csv('RCS_data_mean_climate.csv') %>% filter(scientific_name%in% unique(RCS_
 rcs_index<-function(x)(1-(x-min(x))/(max(x)-min(x)))
 rcs_res<-RCS_comp_all %>%
   group_by(area.type) %>%
-  select(scientific_name, area.type, area.sqkm, starts_with('Csd'))%>%
+  select(scientific_name, area.type, area.sqkm, starts_with('Csd')) %>%
+  filter(area.sqkm != 0) %>%
   mutate(across(where(is.numeric), ~rcs_index(.x))) %>%
   rowwise() %>%
   mutate(RCS=(area.sqkm+mean(c(Csd_ppt, Csd_Tmax, Csd_Tmin)))/2) %>%
@@ -350,21 +460,55 @@ rcs_res<-RCS_comp_all %>%
 
 ```{r}
 rcs_ord<-rcs_res %>% filter(grepl('spat.ext_5km', area.type)) %>% arrange(RCS) %>% pull(scientific_name)
-rcs_res %>%
+rcs.plot.df<-rcs_res %>%
   mutate(spF=factor(scientific_name, levels=rcs_ord),
          ext.type=case_when(grepl('spat.ext', area.type)|grepl('huc12', area.type)~'entire extent',
-                            substr(area.type,1,2) %in% c('al','nc','sc','ga','ms','fl')~ 'state extent',
+                            substr(area.type,1,2) %in% c('al','nc','sc','ga','ms','fl')~ 'state',
                             substr(area.type, 1,3) =='huc'~'HUC2'),
-          `Grain Size`=substr(area.type, nchar(area.type)-2, nchar(area.type))) %>%
+         ext.subtype=case_when(grepl('spat.ext', area.type)|grepl('huc12', area.type)~'entire extent',
+                            substr(area.type,1,2) %in% c('al','nc','sc','ga','ms','fl')~ substr(area.type, 1,2),
+                            substr(area.type, 1,3) =='huc'~gsub('_','',gsub('0','',substr(area.type, 1,5)))),
+          `Grain Size`=substr(area.type, nchar(area.type)-2, nchar(area.type)))
+rcs.plot.df %>%
+  filter(ext.type=='entire extent') %>%
   ggplot(aes(y=spF, x=RCS), alpha=0.5)+
   geom_point(aes(shape=`Grain Size`), size=2)+
   scale_x_reverse('Rarity and Climate Sensitivity Index') +
   theme_classic()+
-  scale_shape_manual(values=c(1,2))+
+  scale_shape_manual(values=c(1,2,3))+
   facet_wrap(~ext.type) +
   theme(axis.text.y = element_text(face='italic'),
         axis.title.y=element_blank(),
         panel.grid.major.y = element_line(color="lightgrey"))
+```
+
+```{r}
+rcs.plot.df %>%
+  filter(ext.type=='state') %>%
+  ggplot(aes(y=spF, x=RCS), alpha=0.5)+
+  geom_point(aes(shape=`Grain Size`), size=2)+
+  scale_x_reverse('Rarity and Climate Sensitivity Index') +
+  theme_classic()+
+  scale_shape_manual(values=c(1,2,3))+
+  facet_grid(~ext.subtype) +
+  theme(axis.text.y = element_text(face='italic'),
+        axis.title.y=element_blank(),
+        panel.grid.major.y = element_line(color="lightgrey"))
+```
+
+```{r}
+rcs.plot.df %>%
+  filter(ext.type=='HUC2') %>%
+  ggplot(aes(y=spF, x=RCS), alpha=0.5)+
+  geom_point(aes(shape=`Grain Size`), size=2)+
+  scale_x_reverse('Rarity and Climate Sensitivity Index') +
+  theme_classic()+
+  scale_shape_manual(values=c(1,2,3))+
+  facet_grid(~ext.subtype) +
+  theme(axis.text.y = element_text(face='italic'),
+        axis.title.y=element_blank(),
+        panel.grid.major.y = element_line(color="lightgrey"))
+
 ```
 
 
