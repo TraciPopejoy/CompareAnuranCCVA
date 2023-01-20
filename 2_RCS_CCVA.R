@@ -1,5 +1,13 @@
 ## ----setup, include=FALSE-----------------------------------------------------------------------
-knitr::opts_chunk$set(echo = TRUE)
+.libPaths('/home/tracidubose/R/OOD/Ubuntu-20.04-4.1.0')
+print(.libPaths())
+
+#knitr::opts_chunk$set(echo = TRUE)
+#install.packages('Hmisc')
+#install.packages('cowplot')
+#install.packages('prism')
+#install.packages('tidyterra')
+#install.packages('exactextractr')
 library(sf); library(tidyverse); library(scales) # load necessary libraries.
 library(terra); library(exactextractr)
 library(cowplot) #for plotting maps later
@@ -7,6 +15,7 @@ library(cowplot) #for plotting maps later
 
 ## ----data prep, eval=T--------------------------------------------------------------------------
 library(Hmisc)
+sf_use_s2(FALSE)
 # Set data paths -----
 # data used
 PATH_iucn_ranges <-'/home/tracidubose/RCS_Anuran_input/ANURA/' #IUCN range maps downloaded 10/2020
@@ -52,7 +61,7 @@ huc12s<-readRDS(PATH_HUC12) %>%
 spat.ext<-readRDS('b_RegionalRCS/spatial_extent.rds') %>% st_transform(crs.albers) %>%
   st_buffer(.1)
 ggplot() + geom_sf(data=spat.ext) + theme_void()
-
+print('data loaded')
 
 ## ----load prism, eval=T-------------------------------------------------------------------------
 library(prism)
@@ -174,7 +183,7 @@ find_area<-function(taxa, # which species to find the aoo for
       # change year to one where climate averages exist
       mutate(year = case_when(year < 1925 ~ 1925,
                                 year > 2018 ~ 2018,
-                                T ~ year)) %>%
+                                T ~ as.numeric(year))) %>%
       # keep all occupied hucs and join all climate mean data
       left_join(env.raster, by="huc12") %>% 
       # reorder columns
@@ -193,17 +202,16 @@ find_area<-function(taxa, # which species to find the aoo for
       ungroup() 
       # across all the data, calculate the mean and sd of the hucxyear mean
       CS_out<-bind_rows(CS_out, 
-                        CS_out_v %>% 
+                        CS_out_v %>% ungroup() %>% 
                           dplyr::summarize(clim=gsub('huc.','',env.r),
-                                           Cmean=mean(clim_sum_val),
-                                           Csd=sd(clim_sum_val)),
-                            # calculate some stats about the years
-                        data.frame(modyear=calcmode(dat_sp$year), 
-                                   newyears=sum(dat_sp$year > 2018),
-                                   oldyear=sum(dat_sp$year < (2020-50))))
-      if(spatial.file1=='huc12s'){
+                                           Cmean=mean(clim_sum_val, na.rm=T),
+                                           Csd=sd(clim_sum_val, na.rm=T)))
+	 if(spatial.file1=='huc12s'){
       write.csv(CS_out_v, paste0(PATH_out, taxa, '_climate_info_', gsub('huc.', '', env.r),'.csv'), row.names = F)}
     }
+    modyear=calcmode(dat_sp$year)
+    newyearrs=sum(dat_sp$year > 2018)
+    oldyear=sum(dat_sp$year < (2020-50))
   }else{
     # Generate 1km point buffers. You must use a projected CRS. For CRS, we use: USA Contiguous albers equal area. 
      area.type<- paste0(spatial.file1,'_',rad,'km')
@@ -250,7 +258,7 @@ find_area<-function(taxa, # which species to find the aoo for
        # change year to one where climate averages exist
       mutate(year = case_when(year < 1925 ~ 1925,
                                 year > 2018 ~ 2018,
-                                T ~ year)) %>%
+                                T ~ as.numeric(year))) %>%
       mutate(climate_year=gsub('mean.', '', name)) %>%
       filter(year >= climate_year, year-30 < climate_year) %>%
       # calculate the climate average at each area
@@ -291,7 +299,7 @@ find_area<-function(taxa, # which species to find the aoo for
                             values_from=c("Cmean","Csd")))
   
   return(RCS_comp)
-  print(paste('done with', taxa, 'at', spatial.file1))
+  cat(print(paste('done with', taxa, 'at', spatial.file1)))
 }
 
 
@@ -319,7 +327,7 @@ start.time<-Sys.time()
 for(spp in anuran.taxa[anuran.taxa !='Lithobates sevosus']){
   buff_out<-NULL
   for(buf.ext in c("spat.ext", "huc3","huc6", "huc8","al","fl","sc","ga")){
-  buff1<-find_area(taxa=spp,
+   buff1<-find_area(taxa=spp,
                   spatial.file1=buf.ext, rad=1,
                   clim.vars = c('ppt','Tmax','Tmin'))
   buff5<-find_area(taxa=spp,
@@ -332,7 +340,7 @@ for(spp in anuran.taxa[anuran.taxa !='Lithobates sevosus']){
   huc12all<-find_area(spp, 
           "huc12s", native_range=T, watershed=T, 
           clim.vars=c('ppt','Tmax','Tmin'))
-
+print(huc12all)
   RCS_comp_all<-bind_rows(RCS_comp_all, huc12all, buff_out)
 }
 end.time<-Sys.time()
@@ -352,7 +360,7 @@ dat_sp<-st_join(ls_aoo, huc12s) %>% # spatial join to identify occupied hucs
       distinct(huc12, year, .keep_all=T)
 # Climate Sensitivity based on the annual AOO calculated above
     CS_out<-NULL
-    for(env.r in paste0('huc.',clim.vars)){
+    for(env.r in c('huc.ppt','huc.Tmax','huc.Tmin')){
     env.raster<-get(env.r)
     CS_out_v <- dat_sp %>% 
       # get rid of a bulky column
@@ -378,11 +386,7 @@ dat_sp<-st_join(ls_aoo, huc12s) %>% # spatial join to identify occupied hucs
                         CS_out_v %>% 
                           dplyr::summarize(clim=gsub('huc.','',env.r),
                                            Cmean=mean(clim_sum_val),
-                                           Csd=sd(clim_sum_val)),
-                            # calculate some stats about the years
-                        data.frame(modyear=calcmode(dat_sp$year), 
-                                   newyears=sum(dat_sp$year > 2018),
-                                   oldyear=sum(dat_sp$year < (2020-50))))
+                                           Csd=sd(clim_sum_val)))
     
 write.csv(CS_out_v, paste0(PATH_out, 'Lithobates sevosus_climate_info_', gsub('huc.', '', env.r),'.csv'), row.names = F)}
 # summarize huc12 analysis
@@ -390,6 +394,7 @@ area.i<-dat_sp %>%
       # only keep one polygon per huc
       distinct(huc12, .keep_all=T) %>% 
       pull(WSAREA) %>% sum() %>% as.numeric()
+all.poly.nrow<-dat_sp %>% distinct(huc12) %>% nrow()
 ls.huc12.res <- data.frame(scientific_name = "Lithoates sevosus", 
                      area.type = 'huc12s_WS',
                      area.sqkm = area.i,
@@ -415,14 +420,16 @@ for(rad in c(1,5)){
   # prep the data frame for climate variable extraction  
  dat_sp <- dat_sp %>% st_transform(st_crs(ppt.prism)) # transform to match climate data
     CS_out<-NULL
-    for(env.r in paste0(clim.vars, '.prism')){
+    for(env.r in c('ppt.prism', 'Tmax.prism','Tmin.prism')){
     env.raster<-get(env.r) # pull in the climate data
     # extract the climate data at each year polygon, returns a list
     env_vals_raw<-exact_extract(env.raster, dat_sp, fun='mean', progress=F, force_df=T)
-    CS_out_v <- env_vals %>%
-      pivot_longer(-species) %>%
+ print(env_vals_raw)
+      
+CS_out_v <- env_vals_raw %>%
+      pivot_longer(everything()) %>%
       mutate(climate_year=gsub('mean.', '', name)) %>%
-      filter(year >= climate_year, year-30 < climate_year) %>%
+      filter(2008 >= climate_year, 2008-30 < climate_year) %>%
       dplyr::summarize(clim=gsub('.prism','',env.r),
                        Cmean=case_when(env.r == 'ppt.prism'~ mean(value, na.rm=T),
                                               env.r == 'Tmax.prism'~ max(value, na.rm=T),
@@ -436,9 +443,8 @@ ls.buff.res<-bind_rows(ls.buff.res,
                      area.sqkm = area.i,
                      min.year=2008,
                      stringsAsFactors = F) %>%
-    bind_cols(CS_out %>%
-                pivot_wider(names_from = clim,
-                            values_from=c("Cmean","Csd")))
+			   bind_cols(CS_out %>%  pivot_wider(names_from = clim,
+                            values_from=c("Cmean","Csd"))))
 }
 
 # combine it with the rest of the RCS info and write out to save it
@@ -489,6 +495,8 @@ main.huc.df<-left_join(all.spp.huc %>%
           huc12s %>% as_tibble() %>% select(huc2, huc12, WSAREA, states),
           by='huc12')
 
+cat(paste(all.spp.huc %>% filter(is.na(clim_sum_val))))
+
 huc.states<-NULL
 for(stt in c("AL","FL","SC","GA")){
   st.huc<-main.huc.df %>% 
@@ -505,7 +513,7 @@ for(stt in c("AL","FL","SC","GA")){
     # keep unique rows with species x huc x year
     distinct(scientific_name, huc12, year, .keep_all=T) %>%
     group_by(scientific_name) %>% # for each species
-    summarize(area.type=paste0(tolower(stt), '_WS'),
+   dplyr::summarize(area.type=paste0(tolower(stt), '_WS'),
               n.polygons=n(), # count the n huc x year
               total.WS=n_distinct(huc12), # count the unique hucs
               # calculate the sd and mean across all hucs
