@@ -1,0 +1,442 @@
+---
+title: "Comparing Ranked Vulnerability"
+author: "Meryl Mims & Traci DuBose"
+date: "1/12/2023"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(knitr);library(MetBrewer); library(cowplot)
+tmplab<-function(x){paste0(x, '°C')}
+```
+
+# Calculate Scaled Climate Change Vulnerability
+
+## regional RCS analysis
+
+The RCS components were calculated on the HPC on 1/20/2023. Below we take those components (area of occurrence and realized climate niche breadth) and calculate the RCS value at multiple spatial extents and grain sizes. We likely will only discuss the entire spatial extent size. 
+
+```{r ccvas}
+RCS_comp_all <- read.csv('data/regional_rcs_011923.csv')
+rcs_index<-function(x)(1-(x-min(x))/(max(x)-min(x)))
+rcs_res_raw<-RCS_comp_all %>%
+  group_by(area.type) %>%
+  select(scientific_name, area.type, area.sqkm, starts_with('Csd')) %>%
+  filter(area.sqkm != 0) 
+rcs_res<-rcs_res_raw %>%
+  mutate(across(where(is.numeric), ~rcs_index(.x))) %>%
+  rowwise() %>%
+  mutate(RCS=(area.sqkm+mean(c(Csd_ppt, Csd_Tmax, Csd_Tmin)))/2) %>%
+  arrange(desc(RCS))
+# keeping just the entire spatial extent for comparison analyses below
+rcs.dat<-rcs_res %>% 
+  filter(area.type %in% c('spat.ext_5km','spat.ext_1km','huc12s_WS')) %>%
+  dplyr::select(scientific_name, area.type, RCS) %>%
+  mutate(CCVAtype='RCS')
+```
+
+
+```{r echo=F}
+# order the species based on the RCS value at the 5km grain size
+rcs_ord<-rcs_res %>% 
+  filter(grepl('huc12s_WS', area.type)) %>% 
+  arrange(RCS) %>% pull(scientific_name)
+rcs.plot.df<-rcs_res %>%
+  # add some levels to make filtering easier for plots
+  mutate(spF=factor(scientific_name, levels=rcs_ord), # species name ordered by RCS
+         # categorize extent type (i.e., entire, state, HUC2)
+         ext.type=case_when(grepl('spat.ext', area.type) | grepl('huc12', area.type) ~ 
+                              'entire extent',
+                            substr(area.type,1,2) %in% c('al','nc','sc','ga','ms','fl') ~
+                              'state',
+                            substr(area.type, 1,3) =='huc'~'HUC2'),
+         # categorize based on subregion
+         ext.subtype=case_when(grepl('spat.ext', area.type) | grepl('huc12', area.type) ~ 
+                                 'entire extent',
+                            substr(area.type,1,2) %in% c('al','nc','sc','ga','ms','fl')~
+                              substr(area.type, 1,2), #state abbreviation 
+                            substr(area.type, 1,3) == 'huc' ~ gsub('_','', gsub('0','', substr(area.type, 1,5)))),# HUC2 identity
+          `Grain Size`=gsub('_','', substr(area.type, nchar(area.type)-2, nchar(area.type))))
+
+rcs.p.entex<-rcs.plot.df %>%
+  filter(ext.type=='entire extent') %>%
+  ggplot(aes(y=spF, x=RCS), alpha=0.5)+
+  geom_point(aes(shape=`Grain Size`), size=2)+
+  scale_x_reverse('Rarity and Climate Sensitivity Index') +
+  theme_classic()+
+  scale_shape_manual(values=c(1,2,3))+
+  theme(axis.text.y = element_text(face='italic', size=9),
+        axis.title.y=element_blank(),
+        axis.title.x=element_text(size=9),
+        legend.position='bottom',
+        panel.grid.major.y = element_line(color="lightgrey"),
+        legend.margin = margin(t=-3, b=-3),
+        plot.margin=margin(r=9, l=4))
+plot_grid(rcs.p.entex+theme(legend.position='none'),
+          get_legend(rcs.p.entex), ncol=1, rel_heights=c(.95,.05))
+ggsave('results/RCS_entire_extent.jpg', width=4, height=4)
+```
+### RCS subregional plots
+
+```{r state rcs plot, fig.width=6.5, echo=F, warning=F, message=F}
+rcs.plot.df %>%
+  filter(ext.type=='state') %>%
+  ggplot(aes(y=spF, x=RCS), alpha=0.5)+
+  geom_point(aes(shape=`Grain Size`), size=2)+
+  scale_x_reverse('Rarity and Climate Sensitivity Index') +
+  theme_classic()+
+  scale_shape_manual(values=c(1,2,3))+
+  facet_grid(~ext.subtype) +
+  theme(axis.text.y = element_text(face='italic'),
+        axis.title.y=element_blank(),
+        axis.text.x=element_text(size=6),
+        panel.grid.major.y = element_line(color="lightgrey"))
+```
+
+```{r huc subreg plots, echo=F, warning=F, message=F}
+rcs.plot.df %>%
+  filter(ext.type=='HUC2') %>%
+  ggplot(aes(y=spF, x=RCS), alpha=0.5)+
+  geom_point(aes(shape=`Grain Size`), size=2)+
+  scale_x_reverse('Rarity and Climate Sensitivity Index') +
+  theme_classic()+
+  scale_shape_manual(values=c(1,2,3))+
+  facet_grid(~ext.subtype) +
+  theme(axis.text.y = element_text(face='italic'),
+        axis.title.y=element_blank(),
+        panel.grid.major.y = element_line(color="lightgrey"))
+```
+
+## calculating vulnerability based on SDMs 
+
+```{r sdm}
+sdm_res<-read.csv('results/analyzed_sdm_metrics.csv') %>%
+   mutate(metric=ifelse(level=='patch', paste('count',class), metric)) %>%
+  dplyr::select(species, metric, value) %>%
+  pivot_wider(names_from=metric)
+sdm.dat<- sdm_res %>%
+  dplyr::select(species, ta, enn_cv, `count 1`, para_mn) %>%
+  mutate(across(-species, ~rcs_index(.x))) %>%
+  rowwise() %>% mutate(habitat_frag=mean(c(enn_cv, `count 1`, para_mn))) %>%
+  ungroup() %>%
+  pivot_longer(-species) %>%
+  filter(name %in% c('ta','habitat_frag')) %>%
+  rename(scientific_name=species) %>%
+  mutate(CCVAtype='SDM') 
+```
+
+```{r sdm plots}
+sd.ord<-sdm_res %>% arrange(ta) %>% pull(species)
+sdm_res %>%
+  pivot_longer(-species, names_to = 'metric') %>%
+  filter(metric %in% c('area_mn', 'enn_cv','para_mn', 'ta')) %>%
+  mutate(met.lab=factor(metric,
+                        levels=c('ta','area_mn','enn_cv','para_mn'),
+                        labels=c('AOO','mean\nPatch Area','Patch Isolation','Patch Shape')),
+         spFac=factor(species, levels=rev(sd.ord))) %>%
+  ggplot()+
+  geom_point(aes(x=value, y=spFac))+
+  facet_grid(~met.lab, scales='free_x')+
+  theme_classic()+
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_text(size=9, face='italic'),
+        strip.background = element_rect(color=NA),
+        panel.border = element_rect(color='lightgrey', fill=NA))
+ggsave('results/SDM_all_types.jpg', width=6.5, height=2.5)
+
+```
+
+## calculating vulnerability based on MNMs
+
+```{r mnm outputs}
+mnm.res<-read.csv('results/MNM_outputs.csv')
+mnm.dat<-mnm.res %>%
+  mutate(per.n.b0=n.b0/nRows,
+         per.n.b2=n.b2/nRows) %>%
+  dplyr::select(species, medWT, starts_with('per')) %>%
+  mutate(scal_medWT=rcs_index(medWT)) %>%
+  select(species, scal_medWT, per.n.b0) %>%
+  pivot_longer(-species) %>%
+  mutate(CCVAtype='MNM') %>% rename(scientific_name = species)
+```
+
+```{r echo=F}
+per.rng.ord<-mnm.res %>% mutate(per0=n.b0/nRows) %>% 
+  arrange(per0, desc(medWT)) %>% pull(species)
+mnm.res %>%
+  mutate(spF=factor(species, levels=per.rng.ord),
+         facn=as.numeric(spF)) %>%
+  ggplot()+
+  geom_vline(xintercept=0, linetype='dashed', color='grey')+
+  geom_errorbarh(aes(y=spF, xmin=WTmin2, xmax=WTmin97), height=0)+
+  geom_point(aes(y=spF, x=medWT))+
+  geom_rect(aes(xmin=min(WTmin2)-1, xmax=min(WTmin2)-.5, 
+              ymin=facn-.5, ymax=facn+.5, fill=sqrt(nRows)))+
+    scale_x_continuous('Minimum Warming Tolerance', labels = tmplab, expand=c(0,0))+
+  scale_fill_viridis_c('N pts', labels=function(x)x^2, 
+                       breaks=sqrt(c(9,250, 500,1000, 1500,2100)))+
+  theme_classic()+
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_text(face='italic', size=9),
+        axis.text.x = element_text(size=9))
+ggsave('results/MNM_rank_WT.jpg', width=3.6, height=5)
+```
+
+# Comparing the Vulnerability Assessments
+
+```{r}
+# order the vulnerability assessments based on RCS WS grain size
+sp.ord<-rcs.dat %>% filter(area.type=='huc12s_WS') %>% arrange(desc(RCS)) %>% pull(scientific_name)
+# join all the metrics together
+com.dat<-bind_rows(rcs.dat %>% rename(value=RCS, name=area.type), 
+                   sdm.dat, mnm.dat) %>%
+  # remove multiple RCS ones that are only different in grain size
+  filter(name != 'spat.ext_1km', name != 'spat.ext_5km') %>%
+  # add some columns to help with plotting orders
+ mutate(spFac=factor(scientific_name, levels=rev(sp.ord)), # species
+        # vulnerability metric with nice labels
+        typeFac=factor(name, 
+                       levels=c('huc12s_WS',#'spat.ext_1km','spat.ext_5km',
+                                'ta','habitat_frag',
+                                'scal_medWT','per.n.b0'),
+                       labels=c('RCS: HUC12 watersheds',#'1km buffers', '5km buffers',
+                                'SDM: AOO','SDM: habitat fragmentation',
+                                'MNM: median\nwarming tolerance (WT)', 'MNM: % range with\nWT < 0')),
+        # vulnerability metric source
+        ccvaFac=factor(CCVAtype, levels=c('RCS','SDM','MNM')))  
+```
+```{r all metrics plot, echo=F}
+com.dat %>% ggplot()+
+  geom_point(aes(x=spFac, y=value, shape=typeFac, fill=typeFac),
+             position=position_dodge(width=.7), size=1.5)+
+  scale_y_reverse('Scaled Climate Change Vulnerability')+
+  scale_fill_manual('CCVA source & metric', values=met.brewer('Greek'))+
+  scale_shape_manual('CCVA source & metric', values=c(21,24,24,25,25))+
+  theme_classic()+theme(axis.title.y=element_blank(),
+                        axis.text.y=element_text(face='italic', size=9),
+                        legend.position='bottom',
+                        legend.margin=margin(r=80))+
+  coord_flip()+
+  guides(fill=guide_legend(ncol=2))
+ggsave('results/scaled_comparison.jpg', width=5, height=6)
+```
+
+We could also compare how different sources of information estimate geographic rarity or sensitivity. 
+
+NOTE: need to put on the same scale : km2 ideally!!
+
+```{r}
+bind_rows(rcs_res_raw %>% filter(area.type %in% c('spat.ext_1km','spat.ext_5km','huc12s_WS')),
+          sdm_res %>% rename(scientific_name=species),
+          mnm.res %>% rename(scientific_name=species)%>%
+            select(scientific_name,nRows, n.b0) %>% mutate(AOO=nRows-n.b0)%>%
+            select(scientific_name, AOO)) %>%
+  ungroup() %>%
+  dplyr::select(scientific_name, area.type, area.sqkm,AOO, ta) %>%
+  pivot_longer(c(area.sqkm, ta, AOO)) %>% filter(!is.na(value)) %>%
+  mutate(ccvalab=case_when(name == 'ta' ~ 'SDM', 
+                           name == 'AOO' ~ 'MNM',
+                           T~paste('RCS', area.type)),
+         spFac=factor(scientific_name, levels=rev(sp.ord))) %>%
+  ggplot()+geom_point(aes(x=value, y=spFac, shape=ccvalab))+
+  scale_shape_manual('Area estimate source', values=c(2,1,3,4,6))+
+  theme_classic()+
+  theme(axis.title.y=element_blank(),
+                        axis.text.y=element_text(face='italic', size=9),
+        panel.grid.major.y = element_line(color='lightgrey'))
+ggsave('results/comparison of area estimates.png', width=5, height=5)
+```
+
+We can start describing this comparison by first describing the distribution of the results of our different climate change vulnerability assessments. 
+
+```{r ccva summary, echo=F}
+kable(com.dat %>%
+        group_by(typeFac) %>%
+        summarise(min=min(value),
+                  `25th quantile`=quantile(value,.25),
+                  `50th quantile`=quantile(value,.50),
+                  mean=mean(value),
+                  `75th quantile`=quantile(value,.75),
+                  max=max(value)) %>%
+        rename('CCVA metric'=typeFac),
+      digits=3)
+
+```
+
+```{r ccva boxplot, echo=F, fig.width=3.5, fig.height=3.5}
+com.dat %>%
+  ggplot()+geom_boxplot(aes(x=typeFac, y=value, fill=typeFac))+
+  #facet_grid(~ccvaFac, scales='free_x')+
+  scale_fill_manual('CCVA source & metric', values=met.brewer('Greek'), guide='none')+
+  theme_classic()+
+  theme(axis.text.x = element_text(size=9, angle=45, hjust=.9))+
+  labs(y='Scaled Climate Change Vulnerability', x='Assessment Type')
+
+```
+
+We can also look at the divergence between different climate change vulnerability assessments. 
+```{r}
+com.difs<-com.dat %>%
+  filter(name %in% c('scal_medWT','huc12s_WS')) %>% ungroup() %>%
+  select(scientific_name, CCVAtype, value) %>%
+  filter(CCVAtype != 'SDM') %>%
+  pivot_wider(names_from = CCVAtype, values_from=value)%>%
+  mutate(rcs.mnm.dif=RCS-MNM) %>%
+  arrange(rcs.mnm.dif) 
+```
+
+```{r difs plots, echo=F}
+dif.ord<-com.difs %>% pull(scientific_name)
+com.difs %>%
+  mutate(spFac=factor(scientific_name, levels=dif.ord)) %>%
+  ungroup() %>%
+  ggplot()+
+  geom_col(aes(y=spFac, x=rcs.mnm.dif))+
+  scale_x_continuous('Difference in scaled vulnerability')+
+  theme_classic()+
+  theme(axis.title.y=element_blank(),
+                        axis.text.y=element_text(face='italic', size=9))
+ggsave('results/diff_chart.jpg', width = 5, height=5)
+```
+
+
+
+```{r}
+div.ord<-com.difs %>% mutate(diver=abs(rcs.mnm.dif)) %>% arrange(diver) %>% pull(scientific_name)
+com.difs %>%
+ # filter(CCVAtype != 'SDM') %>%
+  mutate(spFac=factor(scientific_name, levels=div.ord)) %>% ggplot()+
+  #geom_linerange(aes(x=spFac, ymin=minRank, ymax=maxRank, color=CCVAtype), 
+   #              position=position_dodge(width=.5))+
+  geom_point(aes(x=spFac, y=rcs.mnm.dif),
+             position=position_dodge(width=.5))+
+  scale_y_continuous('Rank Climate Change Vulnerability')+
+  scale_color_manual('CCVA source', values=met.brewer('Archambault'))+
+  scale_shape_manual('CCVA source', values=15:17)+
+  theme_classic()+theme(axis.title.y=element_blank(),
+                        axis.text.y=element_text(face='italic', size=9),
+                        legend.position='bottom',
+                        legend.margin=margin(r=70))+
+  coord_flip()
+```
+
+## Taxonomic Patterns in CCVA convergence/divergence
+
+```{r}
+taxa.table<-data.frame(scientific_name = rcs.dat$scientific_name) %>%
+  mutate(Genus=gsub('\ .*','', scientific_name),
+         Family=case_when(Genus %in% c('Acris', 'Dryophytes', 'Pseudacris') ~ 'Hylidae',
+                          Genus == 'Anaxyrus' ~ 'Bufonidae',
+                          Genus == 'Gastrophryne' ~ 'Microhylidae',
+                          Genus == 'Scaphiopus' ~ 'Scaphiopodidae',
+                          Genus == 'Lithobates' ~ 'Ranidae'))
+com.difs %>% left_join(taxa.table, by='scientific_name') %>%
+  ggplot()+
+  geom_point(aes(y=rcs.mnm.dif, x=Family, fill=Genus), size=3, pch=21,
+             position=position_dodge(width=.7))+
+  scale_y_continuous('Difference in Rank Climate Change Vulnerability (RCS - MNM)')+
+  scale_fill_manual(values=met.brewer('Derain')[c(5,4,6,2,3,7,1)])+
+  theme_classic()+
+  theme(legend.text = element_text(size=9),
+        axis.title = element_text(size=9),
+        axis.text = element_text(size=9))+
+  coord_flip()
+ggsave('results/taxa_dif.jpg', width=4.5, height=3.5)
+```
+
+
+```{r}
+hucs<-read_sf('C:/Users/Owner/Documents/GISfile/WBD_National_GDB/WBD_National_GDB.gdb',
+        layer='WBDHU2') %>%
+  filter(huc2 %in% c('08','06','03'))
+se<-st_as_sf(map('state',c('mississippi', 'georgia', 'florida', 'south carolina', 
+                           'north carolina', 'alabama'), 
+                 fill=T, plot=F)) %>%
+  st_transform(st_crs(hucs))
+ggplot()+
+  geom_sf(data=hucs, fill=NA)+
+  geom_sf_text(data=hucs, aes(label=huc2))+
+  theme_void()
+ggplot()+
+  geom_sf(data=hucs)+
+  geom_sf(data=se, fill=NA)+
+  theme_void()
+```
+
+
+
+
+
+# Trait Space Plot
+
+```{r}
+at1<-read.csv('data/ATraiU_summary_values_2020AUG.csv')
+#names(at1)
+se.at<-at1 %>% select(family, latin_name, max.fecundity_max, max.longevity_max_yrs, min.maturity_min_yrs_fem,
+               max.max_length_mm_fem, max.egg_size_mm,  min.metamorph_time_min,
+               #min.metamorph_size_min, 
+               min.hatch_time_min) %>%
+  filter(latin_name %in% mnm.dat$scientific_name)
+se.at.fam <- se.at %>% group_by(family) %>% summarize(across(where(is.numeric), ~mean(.x, na.rm=T))) %>%
+  pivot_longer(-family, values_to = 'family.mean')
+se.at.tm<-se.at %>% pivot_longer(cols=-c(family, latin_name)) %>%
+  left_join(se.at.fam, by=c('family', 'name'))%>%
+  mutate(use.trait.val=ifelse(is.na(value), family.mean, value),
+         nicename=recode(name, max.fecundity_max="mx.fecundity", max.longevity_max_yrs="mx.age",
+                          min.maturity_min_yrs_fem="min.maturity", max.max_length_mm_fem="female.size",
+                          max.egg_size_mm="mx.egg.size", min.metamorph_time_min="min.metamorph.time",
+                          #min.metamorph_size_min="min.metamorph.size", 
+                          min.hatch_time_min="min.hatch.time")) %>%
+  select(latin_name, nicename, use.trait.val) %>% pivot_wider(names_from=nicename, values_from=use.trait.val) 
+
+an.traits<-left_join(read.csv('../AnuranMNMs/input_data/MNM_traits_SEspp.csv'),
+                     se.at.tm, by=c('species'='latin_name')) %>%
+  filter(species %in% mnm.dat$scientific_name) %>%
+  # filling in some missing traits
+  mutate(nocturnal=ifelse(species %in% c('Pseudacris brachyphona','Pseudacris fouquettei'),1,nocturnal),
+         diurnal=ifelse(species %in% c('Pseudacris brachyphona','Pseudacris fouquettei'),0,diurnal)) %>%
+  # scale so that all traits are centered
+  mutate(across(where(is.numeric), scale))
+names(an.traits)
+#an.traits %>% filter(grepl('Pseuda',species))
+an.traits
+```
+
+
+I then conducted a quick PCA to investigate I was capturing unique trait combinations. There are likely more elegant ways to do this (functional uniqueness) but I thought this sufficient for our needs. The names of the species that we will include (per 12/7 meeting) and those with less that approximately 30% of their range within the SE region are not plotted below to aid in visualization. 
+
+```{r trait pca var, fig.width=3, fig.height=2}
+library(vegan)
+trait.pca<-rda(an.traits[,c(3:5,9:13, 15:21)])
+# investigate variation on different axis
+screeplot(trait.pca); abline(h = 1, col="red", lty=5)
+pca.sum<-summary(trait.pca)
+pca.sum$cont$importance[,1:5]
+```
+
+First, I'll take a look at the trait loadings seperately from the species loadings. Plotting all the traits and species together was overwhelming. I'll use the plot below to name the first, second and third PCA axes. 
+
+```{r pca env plot, fig.width=6.5, fig.height=3, echo=F}
+pca.spp.df<-pca.sum$sites %>% as_tibble() %>% bind_cols(species=an.traits$species) %>%
+  mutate(pltsp=paste0(substr(species, 1,1), '. ', sub(".*? ", "", species)))
+pca.env.df<-pca.sum$species %>% as_tibble() %>% mutate(variable=rownames(pca.sum$species))
+plot_grid(
+  ggplot()+ geom_segment(data=pca.env.df, aes(x=0, y=0, xend=PC1, yend=PC2))+
+              geom_text_repel(dat=pca.env.df, 
+                              aes(x=PC1, y=PC2, label=variable), color='blue')+ 
+    labs(x='PC1',y='PC2')+theme_classic(),
+  ggplot()+ geom_segment(data=pca.env.df, aes(x=0, y=0, xend=PC3, yend=PC2))+
+              geom_text_repel(dat=pca.env.df, 
+                              aes(x=PC3, y=PC2, label=variable), color='blue')+ 
+    labs(x='PC3',y='PC2')+theme_classic())
+```
+```{r}
+left_join(read.csv('../AnuranMNMs/input_data/MNM_traits_SEspp.csv'),
+                     se.at.tm, by=c('species'='latin_name')) %>%
+ filter(species %in% c('Dryophytes andersonii','Dryophytes squirellus','Anaxyrus fowleri','Lithobates capito'))
+  
+
+
+```
