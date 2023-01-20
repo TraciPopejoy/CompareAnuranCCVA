@@ -16,282 +16,75 @@ First, I ran MNMs across the SE on the HPC for each species. This is detailed in
 
 
 ```{r cars}
-summary(cars)
+com_spp <- c("Acris gryllus", "Acris crepitans",
+    "Anaxyrus terrestris", "Anaxyrus fowleri", "Anaxyrus quercicus", 
+    "Dryophytes avivoca",  "Dryophytes andersonii", "Dryophytes cinereus", 
+    "Dryophytes chrysoscelis", "Dryophytes femoralis", "Dryophytes gratiosus",
+    "Dryophytes squirellus",
+    "Gastrophryne carolinensis",
+    "Lithobates capito", "Lithobates grylio", "Lithobates okaloosae", 
+    "Lithobates heckscheri", "Lithobates sphenocephalus", "Lithobates areolatus", 
+    "Lithobates virgatipes", "Lithobates sevosus",
+    "Pseudacris ornata", "Pseudacris feriarum", "Pseudacris brachyphona",
+    "Pseudacris fouquettei",
+    "Scaphiopus holbrookii")
+pts2run<-read.csv('../AnuranMNMs/intermediate_results/points_ran_2023-01-10.csv')
+ecto_out <- read.csv('../AnuranMNMs/intermediate_results/summarized_bodytemps_011223.csv') %>%
+  filter(species %in% com_spp)
+micro_out <- read.csv('../AnuranMNMs/intermediate_results/microclimate_info_011223.csv')
 ```
 
-## Exposure
+# NOTES: building needs to be editted because not outputing correct values
 
-Below is the code I used to run MNMs at a future time point to estimate exposure. 
-
-```{r anuran parallel script, eval=F}
-# R script to programatically run Mechanistic Niche models ----
-# by Traci DuBose, last edited 11/22/2022
-
-# set up the libraries
-.libPaths(.libPaths()[3:1])
-#library(devtools)
-#devtools::install_github('mrke/NicheMapR')
-#devtools::install_github('ilyamaclean/microclima')
-library(tidyverse); library(maps);  library(sf); library(parallel); library(hoardr); library(stars); library(NicheMapR)
-# DATA INPUTS ------------
-coress <- 10
- npts<- 10
-# paths
-PATH <- "./" #arc
-PATH_out <- paste0(PATH, "results/") # where to save the output
-# traits used to parameterize the ectotherm function
-traits <- read.csv(paste0(PATH, "inputed_traits.csv")) %>%
-  mutate(across(c('s.fossorial', 's.arboreal', 'nocturnal','diurnal','crepuscular'),
-                as.numeric)) 
-focal_spp<-traits %>% pull(species) %>% unique() # focal species to run models for
-# completed points
-pts_done <- read.csv('summarized_bodytemps.csv') %>% pull(rowid)
-# points at which to run the microclimate model
-pts_df<-read.csv(paste0(PATH, "points_to_run.csv")) %>%
-          filter(!(rowid %in% pts_done),
-                 grepl(', ', spp_all)) 
-#npts<-nrow(pts_df)
-cat('\ndata loaded\n')
-# FUNCTION WHICH WE USE TO PARALLALIZE CODE ----------
-# it should run the microclimate model and then an ectotherm model for each species found in that grid
-anuranMNMs<-function(rw, write.micro.out=F){
-  pt<-pts_df[pts_df$rowid==rw,]
-  cat(paste0(rw, ' row number \n', round(pt[1,1],3), '  ',round(pt[1,2], 3),'\n'))
-  ecto_out <- NULL
-  ERR <- 1.5
-  micro <- micro_ncep(loc = c(as.numeric(pt[1,1])-+0.00001, as.numeric(pt[1,2])+0.00001),
-                     DEP = c(0, 2.5,  5,  10,  15,  20,  30,  50, 75,  100), #cm
-                     minshade = 0, maxshade = 90, runshade=1,
-                     scenario = 2, # new arguments to compare 
-                     dem.res=1000, # requested resolution DEM from elevatr in meters
-                     Usrhyt = 0.01, # local height for organism
-                     ERR = ERR, 
-                     run.gads=2)
-  gc()
-  while(min(micro$metout[,1])==0 & ERR <= 6){
-        cat("model crashed, trying a higher error tolerance \n")
-        ERR <- ERR + 0.5
-                # rerun the microclimate with slightly higher error tolerance allowed
-        micro <- micro_ncep(loc = c(as.numeric(pt[1,1])-+0.00001, as.numeric(pt[1,2])+0.00001),
-                     DEP = c(0, 2.5,  5,  10,  15,  20,  30,  50, 75,  100), #cm
-                     minshade = 0, maxshade = 90, runshade=1,
-                     scenario = 2, # new arguments to compare 
-                     dem.res=1000, # requested resolution DEM from elevatr in meters
-                     Usrhyt = 0.01, # local height for organism
-                     ERR = ERR, 
-                     run.gads=2)
-        gc()
-cat(paste('row',rw,'tried error ', ERR, 'and it worked ==', min(micro$metout[,1])!=0, '\n'))
-      }
-if(min(micro$metout[,1])==0){
-mc.df<-data.frame(rowid=rw,
-           lat=micro$longlat[2],
-           long=micro$longlat[1],
-           notes='broken model',
-           err=ERR) 
-write.csv(mc.df, paste0(PATH_out, rw,'_microloc.csv'), row.names=F)
-        }else{
-mc.df<-data.frame(rowid=rw,
-           lat=micro$longlat[2],
-write.csv(mc.df, paste0(PATH_out, rw,'_microloc.csv'), row.names=F)
-        }else{
-mc.df<-data.frame(rowid=rw,
-           lat=micro$longlat[2],
-           long=micro$longlat[1],
-           tRainfall=sum(micro$RAINFALL),
-           aRainfall=sum(micro$RAINFALL)/(length(micro$dates2)/365),
-           evel=micro$elev,
-           slope=micro$SLOPE,
-           aspect=micro$ASPECT,
-           err=ERR) %>% 
-mutate(across(-c(rowid, lat, long), ~round(.x, 3))) 
-write.csv(mc.df, paste0(PATH_out, rw,'_microloc.csv'), row.names=F)
-bind_cols(ppt=micro$RAINFALL, dat=micro$dates2) %>% mutate(year=substr(dat,1,4)) %>% 
-        group_by(year) %>% 
-        summarize(mppt=mean(ppt), sdppt=sd(ppt), tppt=sum(ppt), .groups='drop') %>%
-left_join(micro$metout %>%
-	     bind_cols(dat=micro$dates) %>%
-	     mutate(year=substr(dat, 1,4)) %>% 
-	     group_by(year) %>% summarize(across(c(TALOC, TAREF), list(mean=mean, sd=sd, min=min, max=max)), .groups='drop'),
-	  by='year') %>%
-mutate(across(-c(year), ~round(.x, 2)), rowid=rw) %>%
-write.csv(paste0(PATH_out, rw, '_ppt_dat.csv'), row.names=F) 
-gc()
-
-# ECTOTHERM MODEL STARTS -------
-  for(spp in focal_spp){
-    if(grepl(spp, pt$spp_all)){
-      spp_traits <- traits %>% filter(species == spp)
-      cat(paste('ectotherm model for', spp, '\n'))
-      ecto<-ectotherm(Ww_g=spp_traits["Mass"], 
-                      shape = 4, # shape based on leopard frog
-                      CT_max=spp_traits["CTmax"], 
-                      CT_min=spp_traits["CTmin"], 
-                      T_pref=spp_traits["Tpref"],
-                      # when is activity allowed
-                      diurn=spp_traits["diurnal"],
-                      nocturn=spp_traits["nocturnal"],
-                      crepus=spp_traits["crepuscular"],
-                      # can it go into a burrow or climb to cool off
-                      burrow=spp_traits["s.fossorial"],
-                      climb=spp_traits["s.arboreal"],
-                      shdburrow = 1, #the animal's retreat is in the open (0), in the shade when above or below CTmin in sun (1) or in shade always
-                      maxdepth = 10, #maximum depth of the burrow
-                      T_F_min=max(c(as.numeric(spp_traits["Tforage_min"]), as.numeric(spp_traits["Tmerge"]))),
-                      T_F_max=min(c(as.numeric(spp_traits["Tforage_max"]), as.numeric(spp_traits["CTmax"]))),
-                      T_RB_min=spp_traits["Tmerge"],
-                      T_B_min=spp_traits["Tmerge"],
-                      # microclimate port from parent environment
-                      nyears= micro$nyears, 
-                      minshades = micro$minshade, 
-                      maxshades = micro$maxshade, 
-                      alpha_sub = (1 - micro$REFL), 
-                      DEP = micro$DEP, KS = micro$KS, b = micro$BB, 
-                      PE = micro$PE, metout = micro$metout, shadmet = micro$shadmet, 
-                      soil = micro$soil, shadsoil = micro$shadsoil, soilmoist = micro$soilmoist, 
-                      shadmoist = micro$shadmoist, humid = micro$humid, shadhumid = micro$shadhumid, 
-                      soilpot = micro$soilpot, shadpot = micro$shadpot, tcond = micro$tcond, 
-                      shadtcond = micro$shadtcond, rainfall = micro$RAINFALL, 
-                      preshr = rep(101325 * ((1 - 
-                                                (0.0065 * as.numeric(micro$elev)/288))^(1/0.190284)), 
-                                   nrow(micro$metout)), elev = as.numeric(micro$elev), 
-                      longitude = as.numeric(micro$longlat[1]), 
-                      latitude = as.numeric(micro$longlat[2]),
-		      enberr=ifelse(spp == "Lithobates catesbeianus", .015, .055))
-  
-bodytemps<-ecto$environ %>% as_tibble() %>%
-  mutate(WT=as.numeric(spp_traits["CTmax"])-TC) %>% 
-  group_by(YEAR, DOY) %>% 
-  summarize(activity0=sum(ACT == 0),
-         activity1=sum(ACT == 1),
-         activity2=sum(ACT == 2),
-         shadeMean=round(mean(SHADE),2),
-         across(c(WT,TC,TA,TSUB, TSKY, DEP), list(mean=mean, max=max, min=min)),
-         nHoursAboveCTmax=sum(WT < 0),
-	 species=spp,
-	 rowid=rw, .groups='drop') %>%
-	 mutate(across(c(ends_with('mean'), ends_with('min'), ends_with('max')), ~round(.x, 3))) %>%
-  group_by(species, rowid) %>%
-  summarize(nDays=sum(nHoursAboveCTmax != 0),
-  	meannH=mean(nHoursAboveCTmax), 
-  	WT_ptmin=min(WT_min),
-  	WT_min25=quantile(WT_min, .25),
-  	WT_25=quantile(WT_mean, .25),
-  	WT_75=quantile(WT_mean, .75),
-  	WT_ptmean=mean(WT_mean),
-  	nhrF=sum(activity2), .groups='drop')
-ecto_out<-bind_rows(ecto_out, bodytemps)
-gc()
-}
-}
-write.csv(ecto_out, paste0(PATH_out, rw, "_bodytemps_sum.csv"), row.names=F)
-}
-return(ecto_out)
-}
-
-eval_fork <- function(row, timeout=720){
-
-  #this limit must always be higher than the timeout on the fork!
-  setTimeLimit(timeout+5);      
-  starttime <- Sys.time()
-
-  #dispatch based on method
-  ##NOTE!!!!! Due to a bug in mcparallel, we cannot use silent=TRUE for now.
-  myfork<-parallel::mcparallel(anuranMNMs(row))
-
-  #wait max n seconds for a result.
-  myresult <- parallel::mccollect(myfork, wait=FALSE, timeout=timeout)
-  
-  enddtime <-  Sys.time()
-  totaltime <- as.numeric(enddtime - starttime, units='secs')  
-  #try to avoid bug/race condition where mccollect returns null without waiting full timeout.
-  #see https://github.com/jeroenooms/opencpu/issues/131
-  #waits for max another 2 seconds if proc looks dead 
-  while(is.null(myresult) && totaltime < timeout && totaltime < 2) {
-     Sys.sleep(.1)
-     enddtime <- Sys.time();
-     totaltime <- as.numeric(enddtime - starttime, units="secs")
-     myresult <- parallel::mccollect(myfork, wait = FALSE, timeout = timeout);
-  }
-
-  #kill fork after collect has returned
-  tools::pskill(myfork$pid, tools::SIGKILL);    
-  tools::pskill(-1 * myfork$pid, tools::SIGKILL);  
-
-  #clean up:
-  parallel::mccollect(myfork, wait=FALSE);
-
-  #timeout?
-  if(is.null(myresult)){
-    stop("R call did not return within ", timeout, " seconds. Terminating process.", call.=FALSE);      
-  }
-
-  #move this to distinguish between timeout and NULL returns
-  myresult <- myresult[[1]];
-
-  #reset timer
-  setTimeLimit();     
-
-  #forks don't throw errors themselves
-  if(inherits(myresult,"try-error")){
-    #stop(myresult, call.=FALSE);
-    stop(attr(myresult, "condition"));
-  }
-
-  #send the buffered response
-  return(myresult);  
-  
-}
-
-
-mclapply(pts_df$rowid[1:npts],
-		  eval_fork,
-		  mc.cores=coress)
+```{r}
+test<-readRDS('../AnuranMNMs/intermediate_results/WT_stars_011223.rds')
+test
 ```
 
-I automate this code with the following SLURM job submission script. To speed things up, I 
-
-```{r slurm script, eval=F}
-#!/bin/bash
-#SBATCH -N 1
-#SBATCH --ntasks=75
-#SBATCH --mem-per-cpu=1900
-#SBATCH -t 55;00:00
-#SBATCH -J avoid_mem_error
-#SBATCH -p normal_q
-#SBATCH --account=
-#SBATCH --mail-type=BEGIN,END,FAIL
-#SBATCH --mail-user=
-
-# info: -N=nodes
-#ntasks=cores
-#mem-per-cpu=memory requested (note, it's multiplied by ntasks, so if you ask for 2 cores, and 80 mem-per-cpu, you'll get 160 G)
-#-t = time requested
-#-J = job name
-#-p = partitiion
-#you don't need to mail requests if you don't want to get notifications about the job running, you could just delete
-
-cd /fastscratch/tracidubose/AnuranMNMs #project folder
-
-# make sure the correct files are used
-#cp /home/tracidubose/AnuranMNMs/inputed_physio_traits_11152022.csv inputed_traits.csv
-#cp /home/tracidubose/AnuranMNMs/points_ran_2022-11-17.csv points_to_run.csv
-
-module load containers/singularity # this line is necessary
-echo "Modules loaded:" #these lines are just extra until L34
-module list
-
-echo " "
-echo "============================="
-echo "Running from:"
-pwd
-echo " "
-echo "============================="
-
-
-echo "Running predictor setup step..."
-echo "============================="
-singularity exec --bind=/fastscratch/tracidubose/AnuranMNMs /projects/arcsingularity/ood-rstudio141717-geospatial_4.1.1.sif Rscript pairedMCE_Rscript.r
-echo "============================="
-echo " "
+```{r}
+ggplot()+geom_stars(data=test[11])+
+  theme_void()+
+  scale_fill_continuous(na.value=NA)
 ```
+
+```{r}
+wt_ord<-ecto_out %>% group_by(species) %>%
+  summarize(medWT=median(WT_ptmin)) %>% arrange(medWT) %>%
+  pull(species)
+per.rng.ord<-ecto_out %>% group_by(species) %>%
+  summarize(n=n(), n.b0=sum(WT_ptmin < 0), per.b0=n.b0/n,
+            medWT=median(WT_ptmin)) %>%
+  arrange(per.b0, desc(medWT)) %>% pull(species)
+ecto_out %>%
+group_by(species) %>% 
+  summarize(medWT=median(WT_ptmin),
+            WTmin2=quantile(WT_ptmin, .025),
+            WTmin97=quantile(WT_ptmin, .975),
+            nRows=n()) %>%
+  #left_join(rng_cent, by='species') %>%
+  mutate(spF=factor(species, levels=per.rng.ord)) %>%
+  ggplot()+
+  geom_vline(xintercept=0, linetype='dashed', color='grey')+
+  geom_errorbarh(aes(y=spF, xmin=WTmin2, xmax=WTmin97), height=0)+
+  geom_point(aes(y=spF, x=medWT))+
+  scale_x_continuous('Minimum Warming Tolerance', labels = tmplab)+
+  scale_size('N points')+
+  theme_classic()+
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_text(face='italic', size=9),
+        axis.text.x = element_text(size=9))
+```
+
+```{r}
+ecto_out %>%
+group_by(species) %>% 
+  summarize(medWT=median(WT_ptmin),
+            WTmin2=quantile(WT_ptmin, .025),
+            WTmin97=quantile(WT_ptmin, .975),
+            nRows=n(),
+            n.b0=sum(WT_ptmin < 0),
+            n.b2=sum(WT_ptmin < 2)) %>%
+  write.csv('results/MNM_outputs.csv', row.names = F)
+
+```
+
