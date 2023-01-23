@@ -19,12 +19,16 @@ tmplab<-function(x){paste0(x, '°C')}
 The RCS components were calculated on the HPC on 1/20/2023. Below we take those components (area of occurrence and realized climate niche breadth) and calculate the RCS value at multiple spatial extents and grain sizes. We likely will only discuss the entire spatial extent size. 
 
 ```{r ccvas}
-RCS_comp_all <- read.csv('data/regional_rcs_011923.csv')
+RCS_comp_all <- read.csv('data/regional_rcs_011923.csv') %>%
+  mutate(scientific_name=gsub('Lithoates','Lithobates', scientific_name))
 rcs_index<-function(x)(1-(x-min(x))/(max(x)-min(x)))
 rcs_res_raw<-RCS_comp_all %>%
   group_by(area.type) %>%
   select(scientific_name, area.type, area.sqkm, starts_with('Csd')) %>%
-  filter(area.sqkm != 0) 
+  filter(area.sqkm != 0,  # remove area.types with 0 area in there
+         !is.na(Csd_ppt), # L. capito, L. areolatus, P. fouquettei and have NAs for at WS scale
+         # buffered areas did poorly for L. sevosus for some reason. low CS
+         !(grepl('sevos', scientific_name)&grepl('km', area.type)))
 rcs_res<-rcs_res_raw %>%
   mutate(across(where(is.numeric), ~rcs_index(.x))) %>%
   rowwise() %>%
@@ -78,6 +82,14 @@ plot_grid(rcs.p.entex+theme(legend.position='none'),
           get_legend(rcs.p.entex), ncol=1, rel_heights=c(.95,.05))
 ggsave('results/RCS_entire_extent.jpg', width=4, height=4)
 ```
+```{r}
+RCS_comp_all %>% filter(area.type=='huc12s_WS') %>%
+  arrange(total.WS)
+# need to double check sevosus analysis!! IUCN range is 134.0579 [km^2]
+RCS_comp_all %>% filter(grepl('sevosus', scientific_name)|
+                          grepl('okalo', scientific_name))
+```
+
 ### RCS subregional plots
 
 ```{r state rcs plot, fig.width=6.5, echo=F, warning=F, message=F}

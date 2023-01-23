@@ -7,6 +7,7 @@ output: pdf_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
 #library(dismo)
 library(raster); library(terra); library(stars)
 library(landscapemetrics)
@@ -30,6 +31,13 @@ se <- readRDS(PATH_spatext) %>% st_as_sf() %>%
   st_transform(crs.albers)
 #st_crs(se)
 
+# climate data for projection
+fut<-rast('C:/Users/Owner/Downloads/wc2.1_10m_bioc_ACCESS-CM2_ssp245_2041-2060.tif')
+fut<-crop(fut, ext(se %>% st_transform(st_crs(crs.sdms))))
+names(fut)<-paste0('na_',gsub('o0','o', names(fut)))
+fut
+fut$na_slope<-runif(ncell(fut))
+
 # create raster of study extent
 se_r<-st_rasterize(se, dx=100, dy=100) %>% #turn into a raster of 1x1 kilometers
   st_as_sf(as_points = FALSE, merge = FALSE) %>%  #turn into a polygon
@@ -49,46 +57,83 @@ se_tmn<-spat.ext.terra
 values(se_tmn)<-runif(ncell(se_tmn), min=-5, max=5)
 
 stats_out<-NULL
-for(spp in c('Anaxyrus_terrestris','Scaphiopus_holbrookii','Dryophytes_squirellus', 
+for(spp in c('Anaxyrus_terrestris','Scaphiopus_holbrookii',
+             'Dryophytes_squirellus', 
              'Lithobates_virgatipes', 'Lithobates_sphenocephalus')){
  # read in the outputs from the SDMs
   sp_files<-list.files(PATH_sdms, pattern=spp, full.names=T)
   print(sp_files[grepl('_bi_pred.asc', sp_files)])
   d.bin<-rast(sp_files[grepl('_bi_pred.asc',sp_files)])
   d.bin[d.bin==0] <- NA
-  clim_out<-NULL
-for(env.r in c('se_ppt','se_tmx','se_tmn')){
-  env.ras<-get(env.r)
-  env.ras<-project(env.ras, d.bin, mask=T)
-  env.var<-d.bin*env.ras
-  clim_out<-bind_rows(clim_out,
-            bind_cols(global(env.var, 'mean', na.rm=T),
-                      global(env.var, 'sd', na.rm=T)) %>%
-              mutate(clim=env.r))}
-  # landscape metrics on the binary raster
-spp_out<-bind_rows(
-  lsm_l_ta(d.bin), # total area in hectares
-          lsm_l_cohesion(d.bin), # patch cohesion
-          lsm_l_area_mn(d.bin), # mean area of patch
-          # used in Hoecker & Turner et al. 2022
-          lsm_l_enn_mn(d.bin), # connectedness
-          lsm_l_para_mn(d.bin), # shape, perimieter:area
-          # used in Rose et al. 2022
-          lsm_p_area(d.bin) %>% # number of patches
-            group_by(layer, level, class, metric) %>%
-            summarize(value=n(), .groups = 'drop'), 
-          lsm_l_enn_cv(d.binc)) %>% # patch isolation
-  select(-layer, -id) %>%
-  bind_rows(# realized climate niche breadth
-    clim_out %>% as_tibble() %>% pivot_longer(-clim) %>%
-      mutate(metric=paste(clim, name, sep='.')) %>%
-      select(-name, clim)) %>%
-  mutate(species = gsub('_',' ',spp)) # add in species
-stats_out <- bind_rows(stats_out, spp_out)
-  # extrapolate to projected climate
-  #sdmout<-readRDS('C:/Users/Owner/Downloads/Scaphiopus_holbrookii_topmodel.rds')
+  
+  # projected climate 
+  sdmout<-readRDS(sp_files[grepl('model.rds', sp_files)])
+  sdmpred<-predict(sdmout, fut)
+  # save projected climate out
+  # threshold for binary output
+  sdmpred[sdmpred < 0.6] <- NA # this is fake FIX ME!
+  sdmpred[sdmpred >= 0.6] <- 1
+  
+
+  for(ras.type in c('d.bin', 'sdmpred')){
+    sp.ras<-get(ras.type)
+    clim_out<-NULL
+    for(env.r in c('se_ppt','se_tmx','se_tmn')){
+      env.ras<-get(env.r)
+      env.ras<-project(env.ras, sp.ras, mask=T)
+      env.var<-sp.ras*env.ras
+      clim_out<-bind_rows(clim_out,
+                          bind_cols(global(env.var, 'mean', na.rm=T),
+                                    global(env.var, 'sd', na.rm=T)) %>%
+                            mutate(clim=env.r,
+                                   type=ras.type))}
+    
+    # landscape metrics on the binary raster
+    spp_out<-bind_rows(
+      lsm_l_ta(sp.ras), # total area in hectares
+      lsm_l_cohesion(sp.ras), # patch cohesion
+      lsm_l_area_mn(sp.ras), # mean area of patch
+      # used in Hoecker & Turner et al. 2022
+      lsm_l_enn_mn(sp.ras), # connectedness
+      lsm_l_para_mn(sp.ras), # shape, perimieter:area
+      # used in Rose et al. 2022
+      lsm_p_area(sp.ras) %>% # number of patches
+        group_by(layer, level, class, metric) %>%
+        summarize(value=n(), .groups = 'drop'), 
+      lsm_l_enn_cv(sp.ras)) %>% # patch isolation
+      select(-layer, -id) %>%
+      mutate(type=ras.type)
+    
+    stats_out <- bind_rows(stats_out, spp_out %>%
+                             bind_rows(# realized climate niche breadth
+                               clim_out %>% as_tibble() %>% 
+                                 pivot_longer(-c(clim,type)) %>%
+                                 mutate(metric=paste(clim, name, sep='.')) %>%
+                                 select(-name, -clim)) %>%
+                             mutate(species = gsub('_',' ',spp))) # add in species
+  }
 }
+  
 check_landscape(d.bin)
 stats_out
 write.csv(stats_out, 'results/analyzed_sdm_metrics.csv', row.names = F)
 ```
+
+```{r}
+list.files(PATH_sdms)
+
+stats_out %>% pivot_wider(names_from=type) 
+# calculate the RCS
+rcs_index<-function(x)(1-(x-min(x))/(max(x)-min(x)))
+rcs_sdms<-stats_out %>% filter(metric == 'ta' | grepl('.sd', metric)) %>%
+  select(-level, -class) %>%
+  pivot_wider(names_from=metric) %>% 
+  group_by(type) %>%
+  mutate(across(where(is.numeric), rcs_index), # scale
+         CS=mean(c(se_ppt.sd, se_tmx.sd, se_tmn.sd)),
+         RCS=(ta+CS)/2)
+rcs_sdms %>% 
+  ggplot()+geom_point(aes(x=RCS, y=species, color=type))
+```
+
+
