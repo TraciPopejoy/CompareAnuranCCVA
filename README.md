@@ -19,7 +19,7 @@ Code is currently in draft form and preliminary.
 
 
 ### Folder: data
-This folder contains data that is used to parameterize or build scripts within this folder. Most notably is a phylogeny and image for trait imputation, a trait table to designate different activities for anurans (from ATraiU, Moore et al. 2020), and micro climate data for the mechanistic niche models. 
+This folder contains data that is used to run scripts within this folder. This includes the summarized traits from ATraiU (Moore et al. 2020) and ATraiU-TaDS, outputs from [AnuranMNMs](https://github.com/TraciPopejoy/AnuranMNMs), a folder of SDM outputs, and a table of regional RCS outputs. 
 
 ### Folder: results
 This folder contains figures and tables produced from the code within this folder
