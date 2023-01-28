@@ -8,14 +8,14 @@ output: pdf_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
+library(stars)
 ```
 
 # Sensitivity through Warming Tolerance
 
-First, I ran MNMs across the SE on the HPC for each species. This is detailed in [4a_MNMAcrossSpaceCode.Rmd linked](). The results are pulled in below. 
+First, I ran MNMs across the SE on the HPC for each species. This is detailed in [4a_MNMAcrossSpaceCode.Rmd linked](https://github.com/TraciPopejoy/AnuransMNMs/blob/main/4a_MNMAcrossSpaceCode.Rmd). The results are pulled in below. 
 
-
-```{r cars}
+```{r bring in data}
 com_spp <- c("Acris gryllus", "Acris crepitans",
     "Anaxyrus terrestris", "Anaxyrus fowleri", "Anaxyrus quercicus", 
     "Dryophytes avivoca",  "Dryophytes andersonii", "Dryophytes cinereus", 
@@ -28,33 +28,37 @@ com_spp <- c("Acris gryllus", "Acris crepitans",
     "Pseudacris ornata", "Pseudacris feriarum", "Pseudacris brachyphona",
     "Pseudacris fouquettei",
     "Scaphiopus holbrookii")
-pts2run<-read.csv('../AnuranMNMs/intermediate_results/points_ran_2023-01-10.csv')
-ecto_out <- read.csv('../AnuranMNMs/intermediate_results/summarized_bodytemps_011223.csv') %>%
+pts2run<-read.csv('data/points_ran_2023-01-10.csv')
+ecto_out <- read.csv('data/summarized_bodytemps_230127.csv') %>%
   filter(species %in% com_spp)
-micro_out <- read.csv('../AnuranMNMs/intermediate_results/microclimate_info_011223.csv')
+micro_out <- read.csv('data/microclimate_info_230127.csv')
 ```
 
-# NOTES: building needs to be editted because not outputing correct values
+Below is a stars object (raster that is compatible with sf and tidyverse) of the results. 
 
 ```{r}
-test<-readRDS('../AnuranMNMs/intermediate_results/WT_stars_011223.rds')
-test
+wt.stars<-readRDS('data/WT_stars_230127.rds')
+
+wt.stars[11]
 ```
 
 ```{r}
-ggplot()+geom_stars(data=test[11])+
+ggplot()+geom_stars(data=wt.stars[11])+
   theme_void()+
   scale_fill_continuous(na.value=NA)
 ```
 
-```{r}
+```{r plot mnm results}
+# order the species by median minimum daily minimum warming tolerance
 wt_ord<-ecto_out %>% group_by(species) %>%
   summarize(medWT=median(WT_ptmin)) %>% arrange(medWT) %>%
   pull(species)
+# order based on percent range where minimum daily minimum warming tolerance is less than 0
 per.rng.ord<-ecto_out %>% group_by(species) %>%
   summarize(n=n(), n.b0=sum(WT_ptmin < 0), per.b0=n.b0/n,
             medWT=median(WT_ptmin)) %>%
   arrange(per.b0, desc(medWT)) %>% pull(species)
+# plot the minimum daily minimum warming tolerance
 ecto_out %>%
 group_by(species) %>% 
   summarize(medWT=median(WT_ptmin),
@@ -75,16 +79,18 @@ group_by(species) %>%
         axis.text.x = element_text(size=9))
 ```
 
+The below code chunk outputs a sheet that can be pulled into the final comparison. 
+
 ```{r}
 ecto_out %>%
 group_by(species) %>% 
+  # quantify based on minimum daily minimum warming tolerances (WT_ptmin)
   summarize(medWT=median(WT_ptmin),
             WTmin2=quantile(WT_ptmin, .025),
             WTmin97=quantile(WT_ptmin, .975),
             nRows=n(),
             n.b0=sum(WT_ptmin < 0),
             n.b2=sum(WT_ptmin < 2)) %>%
-  write.csv('results/MNM_outputs.csv', row.names = F)
-
+  write.csv('data/MNM_outputs.csv', row.names = F)
 ```
 

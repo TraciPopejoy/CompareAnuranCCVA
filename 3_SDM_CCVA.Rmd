@@ -13,30 +13,40 @@ library(raster); library(terra); library(stars)
 library(landscapemetrics)
 ```
 
-```{r cars}
+This is code to analyze SDM outputs in terms of habitat fragmentation, total expected area of occupancy, and potential realized climate niche breadth.
+
+```{r bring in the data}
 PATH_sdms<-'data/SDMs/'
-PATH_spatext<-'b_RegionalRCS/spatial_extent.rds'
+PATH_spatext<-'spatial_extent.rds'
+# need to add PRISM data if interested in quantifying climate niche breadth
 prism.ppt<-''
 prism.Tmax<-''
 prism.Tmin<-''
-# to do :
-# replace fake data
-# need to project the raster to albers projection 
-# more research on ways to estimate vulnerability from SDMs
+
+# climate to project to
+fut.clim<-''
+
+# focal species
+foc_species<-gsub('_topmodel.rds', '', list.files(PATH_sdms, pattern='topmodel.rds'))
 
 crs.sdms<-"+proj=longlat +datum=WGS84 +no_defs" # crs of sdms
 crs.albers <- st_crs("+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=km +no_defs")
-# clip rasters to our study area
+```
+
+Then we need to set up files that are consistently used to quantify climate change vulnerability among species.
+
+```{r}
+# prep the spatial extent to clip SDM rasters
 se <- readRDS(PATH_spatext) %>% st_as_sf() %>%
   st_transform(crs.albers)
 #st_crs(se)
 
 # climate data for projection
-fut<-rast('C:/Users/Owner/Downloads/wc2.1_10m_bioc_ACCESS-CM2_ssp245_2041-2060.tif')
-fut<-crop(fut, ext(se %>% st_transform(st_crs(crs.sdms))))
-names(fut)<-paste0('na_',gsub('o0','o', names(fut)))
-fut
-fut$na_slope<-runif(ncell(fut))
+fut<-rast(fut.clim)
+fut<-crop(fut, ext(se %>% st_transform(st_crs(crs.sdms)))) #crop it to our spatial extent
+names(fut)<-paste0('na_',gsub('o0','o', names(fut))) # make sure names match SDM models
+fut 
+#TODO: bring in elevation data and join to the future climate terra raster
 
 # create raster of study extent
 se_r<-st_rasterize(se, dx=100, dy=100) %>% #turn into a raster of 1x1 kilometers
@@ -44,29 +54,23 @@ se_r<-st_rasterize(se, dx=100, dy=100) %>% #turn into a raster of 1x1 kilometers
   rowid_to_column() # add an id column
 st_area(se_r[1,])
 cat('raster created\n')
-spat.ext.terra<-rast(se_r) 
+spat.ext.terra<-rast(se_r) # create a terra object instead of sf object
 
-# faking some data
-se_ppt<-spat.ext.terra
-values(se_ppt)<-runif(ncell(se_ppt), min=500, max=800)
-se_ppt<-project(se_ppt, d.bin, mask=T)    
-se_tmx<-spat.ext.terra
-values(se_tmx)<-runif(ncell(se_tmx), min=16, max=30)
-se_tmx<-project(se_tmx, d.bin, mask=T)
-se_tmn<-spat.ext.terra
-values(se_tmn)<-runif(ncell(se_tmn), min=-5, max=5)
+# cropping climate data
+se_ppt<-terra::project(rast(prism.ppt), spat.ext.terra, mask=T)
+se_tmx<-terra::project(rast(prism.Tmax), spat.ext.terra, mask=T)
+se_tmn<-terra::project(rast(prism.Tmin), spat.ext.terra, mask=T)
 
 stats_out<-NULL
-for(spp in c('Anaxyrus_terrestris','Scaphiopus_holbrookii',
-             'Dryophytes_squirellus', 
-             'Lithobates_virgatipes', 'Lithobates_sphenocephalus')){
+for(spp in foc_species){
  # read in the outputs from the SDMs
   sp_files<-list.files(PATH_sdms, pattern=spp, full.names=T)
   print(sp_files[grepl('_bi_pred.asc', sp_files)])
+  # read in the binary presense raster
   d.bin<-rast(sp_files[grepl('_bi_pred.asc',sp_files)])
   d.bin[d.bin==0] <- NA
   
-  # projected climate 
+  # project SDM to future climate 
   sdmout<-readRDS(sp_files[grepl('model.rds', sp_files)])
   sdmpred<-predict(sdmout, fut)
   # save projected climate out
@@ -74,14 +78,15 @@ for(spp in c('Anaxyrus_terrestris','Scaphiopus_holbrookii',
   sdmpred[sdmpred < 0.6] <- NA # this is fake FIX ME!
   sdmpred[sdmpred >= 0.6] <- 1
   
-
+ # for each raster type (binary current and future predicted)
   for(ras.type in c('d.bin', 'sdmpred')){
     sp.ras<-get(ras.type)
     clim_out<-NULL
+    # get the realized niche breadth
     for(env.r in c('se_ppt','se_tmx','se_tmn')){
       env.ras<-get(env.r)
       env.ras<-project(env.ras, sp.ras, mask=T)
-      env.var<-sp.ras*env.ras
+      env.var<-sp.ras*env.ras # assumes perfect alignment
       clim_out<-bind_rows(clim_out,
                           bind_cols(global(env.var, 'mean', na.rm=T),
                                     global(env.var, 'sd', na.rm=T)) %>%
@@ -104,6 +109,7 @@ for(spp in c('Anaxyrus_terrestris','Scaphiopus_holbrookii',
       select(-layer, -id) %>%
       mutate(type=ras.type)
     
+    # keep it all out and bind_rows to build summary data.frame
     stats_out <- bind_rows(stats_out, spp_out %>%
                              bind_rows(# realized climate niche breadth
                                clim_out %>% as_tibble() %>% 
@@ -116,7 +122,7 @@ for(spp in c('Anaxyrus_terrestris','Scaphiopus_holbrookii',
   
 check_landscape(d.bin)
 stats_out
-write.csv(stats_out, 'results/analyzed_sdm_metrics.csv', row.names = F)
+write.csv(stats_out, 'data/analyzed_sdm_metrics.csv', row.names = F)
 ```
 
 ```{r}

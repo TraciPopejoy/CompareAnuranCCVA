@@ -14,14 +14,24 @@ tmplab<-function(x){paste0(x, '°C')}
 
 # Calculate Scaled Climate Change Vulnerability
 
+```{r data loc}
+PATH_regrcs<-'data/regional_rcs_011923.csv'
+PATH_sdmsout<-'data/analyzed_sdm_metrics.csv'
+PATH_mnms<- 'data/MNM_outputs.csv'
+PATH_WBD_National_GDB <- '' #location of WBD national geodatabase
+PATH_SE_ATraiuTaDS <- 'data/MNM_traits_SEspp_011923.csv'
+PATH_ATraiU<- 'data/ATraiU_summary_values_2020AUG.csv'
+
+```
+
 ## regional RCS analysis
 
 The RCS components were calculated on the HPC on 1/20/2023. Below we take those components (area of occurrence and realized climate niche breadth) and calculate the RCS value at multiple spatial extents and grain sizes. We likely will only discuss the entire spatial extent size. 
 
 ```{r ccvas}
-RCS_comp_all <- read.csv('data/regional_rcs_011923.csv') %>%
+RCS_comp_all <- read.csv(PATH_regrcs) %>%
   mutate(scientific_name=gsub('Lithoates','Lithobates', scientific_name))
-rcs_index<-function(x)(1-(x-min(x))/(max(x)-min(x)))
+rcs_index<-function(x)(1-(x-min(x))/(max(x)-min(x))) # RCS scale function
 rcs_res_raw<-RCS_comp_all %>%
   group_by(area.type) %>%
   select(scientific_name, area.type, area.sqkm, starts_with('Csd')) %>%
@@ -124,7 +134,7 @@ rcs.plot.df %>%
 ## calculating vulnerability based on SDMs 
 
 ```{r sdm}
-sdm_res<-read.csv('results/analyzed_sdm_metrics.csv') %>%
+sdm_res<-read.csv(PATH_sdmsout) %>%
    mutate(metric=ifelse(level=='patch', paste('count',class), metric)) %>%
   dplyr::select(species, metric, value) %>%
   pivot_wider(names_from=metric)
@@ -163,7 +173,7 @@ ggsave('results/SDM_all_types.jpg', width=6.5, height=2.5)
 ## calculating vulnerability based on MNMs
 
 ```{r mnm outputs}
-mnm.res<-read.csv('results/MNM_outputs.csv')
+mnm.res<-read.csv(PATH_mnms)
 mnm.dat<-mnm.res %>%
   mutate(per.n.b0=n.b0/nRows,
          per.n.b2=n.b2/nRows) %>%
@@ -360,7 +370,7 @@ ggsave('results/taxa_dif.jpg', width=4.5, height=3.5)
 
 
 ```{r}
-hucs<-read_sf('C:/Users/Owner/Documents/GISfile/WBD_National_GDB/WBD_National_GDB.gdb',
+hucs<-read_sf(PATH_WBD_National_GDB,
         layer='WBDHU2') %>%
   filter(huc2 %in% c('08','06','03'))
 se<-st_as_sf(map('state',c('mississippi', 'georgia', 'florida', 'south carolina', 
@@ -384,7 +394,7 @@ ggplot()+
 # Trait Space Plot
 
 ```{r}
-at1<-read.csv('data/ATraiU_summary_values_2020AUG.csv')
+at1<-read.csv(PATH_ATraiU)
 #names(at1)
 se.at<-at1 %>% select(family, latin_name, max.fecundity_max, max.longevity_max_yrs, min.maturity_min_yrs_fem,
                max.max_length_mm_fem, max.egg_size_mm,  min.metamorph_time_min,
@@ -403,7 +413,7 @@ se.at.tm<-se.at %>% pivot_longer(cols=-c(family, latin_name)) %>%
                           min.hatch_time_min="min.hatch.time")) %>%
   select(latin_name, nicename, use.trait.val) %>% pivot_wider(names_from=nicename, values_from=use.trait.val) 
 
-an.traits<-left_join(read.csv('../AnuranMNMs/input_data/MNM_traits_SEspp.csv'),
+an.traits<-left_join(read.csv(PATH_SE_ATraiuTaDS),
                      se.at.tm, by=c('species'='latin_name')) %>%
   filter(species %in% mnm.dat$scientific_name) %>%
   # filling in some missing traits
@@ -444,11 +454,4 @@ plot_grid(
                               aes(x=PC3, y=PC2, label=variable), color='blue')+ 
     labs(x='PC3',y='PC2')+theme_classic())
 ```
-```{r}
-left_join(read.csv('../AnuranMNMs/input_data/MNM_traits_SEspp.csv'),
-                     se.at.tm, by=c('species'='latin_name')) %>%
- filter(species %in% c('Dryophytes andersonii','Dryophytes squirellus','Anaxyrus fowleri','Lithobates capito'))
-  
 
-
-```

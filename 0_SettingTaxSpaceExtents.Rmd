@@ -373,7 +373,7 @@ trait.table<-left_join(trait_avail, se.at.tm, by=c('species'='latin_name')) %>%
   filter(species %in% (spp.rnks %>% filter(category != 'Range Edge') %>% pull(species))) %>%
   select(-n_traits, -traits,
          -Tbask, -Tforage_max, -Tforage_min,) 
-write.csv(trait.table, 'trait_table.csv')
+write.csv(trait.table, 'results/trait_table.csv')
 ```
 
 I looked for trait overlaps in Excel. It looks like Lithobates sevosus and Lithobates capito are very similar, as well as Dryophytes andersonii and Dryophytes femoralis. All of the Pseudacris species are very similar as well. These species trait matrices are shown below. 
